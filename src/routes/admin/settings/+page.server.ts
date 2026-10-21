@@ -587,14 +587,15 @@ export const actions = {
 			sonaBuild: text('sonaBuild', 200),
 			sonaKeyFeatures: text('sonaKeyFeatures', 500),
 			// Re-parse + re-serialize the swatch JSON so only well-formed { name, hex }
-			// survive, deduped by hex, then clamped to the palette cap (the UI
-			// enforces both too).
+			// survive, names capped like every other text field, deduped by hex,
+			// then clamped to the palette cap (the UI enforces the dedupe and the
+			// palette cap too, but not the name cap).
 			sonaColors: data.has('sonaColors')
 				? JSON.stringify(
 						dedupePalette(
-							parseSonaColors((data.get('sonaColors') as string) || '[]').filter((c) =>
-								/^#[0-9a-fA-F]{3,8}$/.test(c.hex)
-							)
+							parseSonaColors((data.get('sonaColors') as string) || '[]')
+								.filter((c) => /^#[0-9a-fA-F]{3,8}$/.test(c.hex))
+								.map((c) => ({ ...c, name: sanitizeText(c.name, 60) }))
 						).slice(0, MAX_SONA_COLORS)
 					)
 				: undefined,
