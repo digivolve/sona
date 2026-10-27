@@ -40,6 +40,7 @@ import {
 	E2E_PLATFORM_PERSIST_CONVENTIONS_EVENT,
 	E2E_PERSIST_TO_COMMISSIONS,
 	E2E_PLATFORM_PERSIST_COMMISSIONS,
+	E2E_COMMISSIONS_OVERLAY,
 	E2E_WRANGLER_CONFIG_COMMISSIONS_GATED,
 	E2E_COMMISSIONS_GATED_OVERLAY,
 	E2E_PERSIST_TO_COMMISSIONS_GATED,
@@ -240,7 +241,8 @@ const COMMISSIONS_SPECS = ['**/commission-ledger-crud.spec.ts', '**/commission-l
 const commissionsServerEnv = {
 	SONA_E2E_WRANGLER_CONFIG: E2E_WRANGLER_CONFIG,
 	SONA_E2E_PERSIST_TO: E2E_PLATFORM_PERSIST_COMMISSIONS,
-	SONA_E2E_SEED_PERSIST_TO: E2E_PERSIST_TO_COMMISSIONS
+	SONA_E2E_SEED_PERSIST_TO: E2E_PERSIST_TO_COMMISSIONS,
+	SONA_E2E_SEED_OVERLAY: E2E_COMMISSIONS_OVERLAY
 };
 
 // The gated ledger spec needs the early-access gate closed, which takes a
@@ -278,12 +280,14 @@ const SUGGEST_TAGS_SPEC = '**/suggest-tags.spec.ts';
 // registry-sync needs the registry turned on, which no other server has; so does
 // new-artist-handle, whose dialog only classifies handles with the registry on,
 // and share-private-artist, whose Share button only renders with it on, and
-// new-artist-import-all, whose Import all footer only renders with it on.
+// new-artist-import-all, whose Import all footer only renders with it on, and
+// commission-add-handle-private, whose dialog only searches with it on.
 const REGISTRY_SPECS = [
 	'**/registry-sync.spec.ts',
 	'**/new-artist-handle.spec.ts',
 	'**/share-private-artist.spec.ts',
-	'**/new-artist-import-all.spec.ts'
+	'**/new-artist-import-all.spec.ts',
+	'**/commission-add-handle-private.spec.ts'
 ];
 // tag-suggestions reads the two admin forms with the lookup endpoint
 // intercepted and writes no rows, but it cannot take the parallel project: its

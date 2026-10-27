@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { PageData } from './$types';
 	import { onMount } from 'svelte';
 	import type { SubmitFunction } from '@sveltejs/kit';
 	import { enhance } from '$app/forms';
@@ -12,8 +13,13 @@
 	import { toast } from '$lib/toast.svelte';
 	import { commissionDateRows, PAYMENT_LABELS, STATUS_LABELS, STATUS_TONES } from '$lib/commissions';
 	import * as m from '$lib/paraglide/messages';
+	import { draftSnapshot } from '$lib/drafts';
 
-	let { data, form } = $props();
+	let { form } = $props();
+	// Read from `page`, not the `data` prop: a Back press that interrupts a
+	// navigation between two ledger pages can leave the prop holding the other
+	// page's data for good (sveltejs/kit#13276), while `page.data` is this page's.
+	const data = $derived(page.data as PageData);
 
 	// Null only after a save without JavaScript found the entry deleted elsewhere.
 	const entry = $derived(data.entry);
@@ -58,6 +64,12 @@
 					})
 				: m.admin_commissions_delete_message({ title: entry.title, artist: entry.artistName })
 	);
+
+	// The draft survives following a link off the page (the lookup's "Artists
+	// page") and coming back with the browser's Back button. The form decides
+	// what a draft is and when there's one.
+	let commissionForm = $state<ReturnType<typeof CommissionForm>>();
+	export const snapshot = draftSnapshot(() => commissionForm);
 
 	const enhanceDelete: SubmitFunction = () => {
 		deleting = true;
@@ -124,6 +136,7 @@
 	/>
 {:else if data.gate.open}
 	<CommissionForm
+		bind:this={commissionForm}
 		artists={data.artists}
 		characters={data.characters}
 		{entry}
