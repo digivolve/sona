@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { X, Loader2 } from 'lucide-svelte';
 	import { toast } from '$lib/toast.svelte';
+	import { focusTrap } from '$lib/focus-trap';
 	import * as m from '$lib/paraglide/messages';
 	import { shouldSearch, resultToPrefill, resultHandle, type RegResult } from '$lib/registry-search';
 	import { classifyQuery } from '$lib/handle-classify';
@@ -55,6 +56,8 @@
 		 * The artists page sets it; pickers that create an artist for a piece
 		 * don't need it. */
 		allowLedgerPrivate?: boolean;
+		/** Start with Keep private ticked: a commission entry's artist (SONA-236). */
+		startPrivate?: boolean;
 	}
 	let {
 		oncreated,
@@ -66,7 +69,8 @@
 		initialSocials,
 		prefillSource,
 		prefillSite = '',
-		allowLedgerPrivate = false
+		allowLedgerPrivate = false,
+		startPrivate = false
 	}: Props = $props();
 
 	// Mirrors the Edit Artist modal on /admin/artists, but creates via the
@@ -83,11 +87,12 @@
 	let deviantart = $state('');
 	let patreon = $state('');
 	let instagram = $state('');
-	let ledgerPrivate = $state(false);
+	let ledgerPrivate = $state(untrack(() => allowLedgerPrivate && startPrivate));
 	// Keep private promises the artist stays out of the shared registry, so the
 	// name isn't sent there as a search either while it's ticked (SONA-236).
 	// Unticking searches for the name as typed.
 	let registrySearch = $derived(registryEnabled && !(allowLedgerPrivate && ledgerPrivate));
+	let nameInput = $state<HTMLInputElement>();
 	let saving = $state(false);
 	let errorMsg = $state('');
 
@@ -168,23 +173,41 @@
 	// Default checked per the approved design.
 	let keepUpdated = $state(true);
 	let importingAll = $state(false);
+	let importNButton = $state<HTMLButtonElement>();
 
 	// registryEnabled arrives as a prop (resolved in the admin layout load), so the
 	// search box's presence is decided before render. When on, fetch the catalog
 	// import plan for the footer + "Import all" flow.
-	// The control that opened the modal. Cancelling or creating unmounts the
-	// dialog, and without this focus falls to <body> and the next Tab restarts
-	// at the top of the page (2.4.3).
-	const opener = typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null);
+	// Cancelling or creating unmounts the dialog; focusTrap then hands focus back
+	// to the control that opened it, so it doesn't fall to <body> (2.4.3).
 	onDestroy(() => {
 		// A lookup seed arms the debounce on mount, so closing the dialog inside
 		// those 250 ms would otherwise fire a registry search for a dialog that is
 		// gone and land its result in the state of a destroyed component.
 		clearTimeout(searchTimer);
-		if (opener?.isConnected) opener.focus();
 	});
 
+	// Escape, from anywhere while the dialog is open: closes Import all's
+	// confirmation if it's up, else the dialog.
+	function onEscape() {
+		if (showImportAll) {
+			if (!importingAll) showImportAll = false;
+		} else oncancel();
+	}
+
+	function onPrivateChange(e: Event & { currentTarget: HTMLInputElement }) {
+		ledgerPrivate = e.currentTarget.checked;
+		if (registrySearch) onNameInput();
+		else {
+			resetSearch();
+			pickAnnouncement = '';
+		}
+	}
+
 	onMount(async () => {
+		// autofocus does nothing on an input mounted after page load, so focus
+		// stayed on the opener, outside the modal, and Escape never reached it.
+		nameInput?.focus();
 		// A lookup-seeded name has never been through oninput, so nothing has
 		// searched the registry for it. Go through onNameInput rather than
 		// searchRegistry directly, so the handle-vs-name classification and the
@@ -205,6 +228,7 @@
 	async function runImportAll() {
 		if (importingAll || !importPlan) return;
 		importingAll = true;
+		let imported = false;
 		try {
 			const res = await fetch('/api/registry/import', {
 				method: 'POST',
@@ -229,7 +253,12 @@
 				return;
 			}
 			toast.success(m.admin_registry_imported_toast({ count: data.created ?? 0 }));
+			imported = true;
 			showImportAll = false;
+			// Let the confirmation unmount first, so its trap hands focus back to
+			// Import all before a caller that closes the dialog moves it on to
+			// the dialog's opener.
+			await tick();
 			// Not awaited into the catch below, for the same reason oncreated is not:
 			// the import already succeeded, and a throw out of the caller's refresh
 			// is not a network failure to report as one. Resolved and logged instead,
@@ -241,6 +270,12 @@
 			toast.error(m.admin_new_artist_network_error());
 		} finally {
 			importingAll = false;
+			if (!imported) {
+				// Every control in the confirmation was disabled while importing, so
+				// focus fell out of it; put it back on Import N for a retry.
+				await tick();
+				importNButton?.focus();
+			}
 		}
 	}
 
@@ -280,14 +315,6 @@
 	// Typing in the name field (registry on) re-searches. Editing after a pick
 	// unlinks — the identity no longer matches what's typed, so we drop back to
 	// plain-create (dropping the unedited pulled socials) until they pick again.
-	function onPrivateChange(e: Event & { currentTarget: HTMLInputElement }) {
-		ledgerPrivate = e.currentTarget.checked;
-		if (registrySearch) onNameInput();
-		else {
-			resetSearch();
-			pickAnnouncement = '';
-		}
-	}
 	function onNameInput() {
 		if (!registrySearch) return;
 		if (pulled) {
@@ -440,8 +467,8 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="modal-backdrop" onclick={oncancel} onkeydown={(e) => { if (e.key === 'Escape') oncancel(); }}>
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- backdrop click-to-dismiss duplicates the Escape/Cancel paths -->
+<div class="modal-backdrop" onclick={oncancel}>
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<!-- The guess lines describe the whole dialog, so they are read on entry:
 	     the name field autofocuses already full, and nothing else says where
@@ -450,6 +477,8 @@
 		class="modal"
 		role="dialog"
 		aria-modal="true"
+		tabindex="-1"
+		use:focusTrap={onEscape}
 		aria-label={title}
 		aria-describedby={prefillSource === 'lookup' ? 'lookup-guess-lines' : undefined}
 		onclick={(e) => e.stopPropagation()}
@@ -486,6 +515,7 @@
 						type="text"
 						class="input"
 						bind:value={name}
+						bind:this={nameInput}
 						required
 						autofocus
 						placeholder={m.admin_upload_artist_name_placeholder()}
@@ -606,10 +636,24 @@
 </div>
 
 {#if showImportAll && importPlan}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-backdrop confirm-layer" onclick={() => { if (!importingAll) showImportAll = false; }} onkeydown={(e) => { if (e.key === 'Escape' && !importingAll) showImportAll = false; }}>
+	<!-- This layer renders outside the dialog's panel, so it takes focus and
+	     traps Tab with its own focusTrap, and hands focus back to Import all
+	     when it closes. Escape is left to the dialog's trap, whose onEscape
+	     closes this layer first: both traps listen on window, so closing here
+	     too would let the dialog's trap see the layer already gone and close
+	     the whole dialog on the same keypress. -->
+	<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- backdrop click-to-dismiss duplicates the Escape/Cancel paths -->
+	<div class="modal-backdrop confirm-layer" onclick={() => { if (!importingAll) showImportAll = false; }}>
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="modal confirm-modal" role="dialog" aria-modal="true" aria-label={m.admin_registry_import_all_title()} onclick={(e) => e.stopPropagation()}>
+		<div
+			class="modal confirm-modal"
+			role="dialog"
+			aria-modal="true"
+			tabindex="-1"
+			use:focusTrap={() => {}}
+			aria-label={m.admin_registry_import_all_title()}
+			onclick={(e) => e.stopPropagation()}
+		>
 			<div class="modal-header">
 				<h2>{m.admin_registry_import_all_title()}</h2>
 				<button class="icon-btn" onclick={() => (showImportAll = false)} disabled={importingAll} aria-label={m.admin_close()}><X size={18} /></button>
@@ -624,7 +668,7 @@
 			</div>
 			<div class="modal-actions">
 				<button type="button" class="btn btn-secondary" onclick={() => (showImportAll = false)} disabled={importingAll}>{m.admin_cancel()}</button>
-				<button type="button" class="btn btn-primary" onclick={runImportAll} disabled={importingAll || importPlan.toCreate === 0}>
+				<button type="button" class="btn btn-primary" bind:this={importNButton} onclick={runImportAll} disabled={importingAll || importPlan.toCreate === 0}>
 					{#if importingAll}
 						<Loader2 size={16} class="spin" /> {m.admin_registry_importing()}
 					{:else}

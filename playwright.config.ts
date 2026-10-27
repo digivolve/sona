@@ -37,7 +37,13 @@ import {
 	E2E_PLATFORM_PERSIST_PASSPORT_EMPTY,
 	E2E_CONVENTIONS_EVENT_OVERLAY,
 	E2E_PERSIST_TO_CONVENTIONS_EVENT,
-	E2E_PLATFORM_PERSIST_CONVENTIONS_EVENT
+	E2E_PLATFORM_PERSIST_CONVENTIONS_EVENT,
+	E2E_PERSIST_TO_COMMISSIONS,
+	E2E_PLATFORM_PERSIST_COMMISSIONS,
+	E2E_WRANGLER_CONFIG_COMMISSIONS_GATED,
+	E2E_COMMISSIONS_GATED_OVERLAY,
+	E2E_PERSIST_TO_COMMISSIONS_GATED,
+	E2E_PLATFORM_PERSIST_COMMISSIONS_GATED
 } from './tests/e2e/paths';
 
 // The shared read-only DB/server (gallery, palette), an isolated one for the
@@ -46,12 +52,13 @@ import {
 // shared specs), an isolated one for the upload spec, and isolated ones for the
 // serial tag-suggestions and suggest-tags specs, and one for the registry-sync
 // spec (registry features on, registry interceptor preloaded), two for the
-// passport homepage spec (populated and fresh-site), and one for the admin
-// conventions FurTrack event spec — see below.
+// passport homepage spec (populated and fresh-site), one for the admin
+// conventions FurTrack event spec, and two for the commission ledger specs
+// (writable, and gate closed) — see below.
 //
-// The twelve ports are derived from one base so a concurrent run can take a
-// private block: set SONA_E2E_BASE_PORT and this run binds base..base+11 instead
-// of 4179-4190. Without it, every checkout and every agent binds the same twelve
+// The fourteen ports are derived from one base so a concurrent run can take a
+// private block: set SONA_E2E_BASE_PORT and this run binds base..base+13 instead
+// of 4179-4192. Without it, every checkout and every agent binds the same fourteen
 // ports, and a second run either dies on --strictPort or (worse) gets its
 // servers killed by whoever assumes the listener is their own stray (SONA-164).
 // `||`, not `??`, for the same reason as persistRoot in tests/e2e/paths.ts: a
@@ -59,9 +66,9 @@ import {
 // explicitly invalid port still trips the check below rather than silently
 // falling back.)
 const BASE_PORT = Number(process.env.SONA_E2E_BASE_PORT || 4179);
-if (!Number.isInteger(BASE_PORT) || BASE_PORT < 1024 || BASE_PORT > 65_524) {
+if (!Number.isInteger(BASE_PORT) || BASE_PORT < 1024 || BASE_PORT > 65_522) {
 	throw new Error(
-		`SONA_E2E_BASE_PORT must be an integer in 1024-65524 (needs 12 consecutive ports), got: ${process.env.SONA_E2E_BASE_PORT}`
+		`SONA_E2E_BASE_PORT must be an integer in 1024-65522 (needs 14 consecutive ports), got: ${process.env.SONA_E2E_BASE_PORT}`
 	);
 }
 const PORT = BASE_PORT;
@@ -76,6 +83,8 @@ const REGISTRY_PORT = BASE_PORT + 8;
 const PASSPORT_PORT = BASE_PORT + 9;
 const PASSPORT_EMPTY_PORT = BASE_PORT + 10;
 const CONVENTIONS_EVENT_PORT = BASE_PORT + 11;
+const COMMISSIONS_PORT = BASE_PORT + 12;
+const COMMISSIONS_GATED_PORT = BASE_PORT + 13;
 
 // Point `vite dev` at the E2E-only wrangler config + throwaway persist dir (see
 // svelte.config.js, which honours these envs) so tests run against the DB the
@@ -223,6 +232,29 @@ const conventionsEventServerEnv = {
 	SONA_E2E_SEED_OVERLAY: E2E_CONVENTIONS_EVENT_OVERLAY
 };
 
+// The commission ledger CRUD and saves specs create, edit, and delete entries,
+// so they get their own seeded DB + server; one worker, because their tests
+// share that DB's ledger (SONA-236). The shared wrangler config opens the gate.
+const COMMISSIONS_SPECS = ['**/commission-ledger-crud.spec.ts', '**/commission-ledger-saves.spec.ts'];
+
+const commissionsServerEnv = {
+	SONA_E2E_WRANGLER_CONFIG: E2E_WRANGLER_CONFIG,
+	SONA_E2E_PERSIST_TO: E2E_PLATFORM_PERSIST_COMMISSIONS,
+	SONA_E2E_SEED_PERSIST_TO: E2E_PERSIST_TO_COMMISSIONS
+};
+
+// The gated ledger spec needs the early-access gate closed, which takes a
+// wrangler config without E2E_COMMISSION_GATE, and one seeded entry to read and
+// delete. Its own DB + server (SONA-236).
+const COMMISSIONS_GATED_SPEC = '**/commission-ledger-gated.spec.ts';
+
+const commissionsGatedServerEnv = {
+	SONA_E2E_WRANGLER_CONFIG: E2E_WRANGLER_CONFIG_COMMISSIONS_GATED,
+	SONA_E2E_PERSIST_TO: E2E_PLATFORM_PERSIST_COMMISSIONS_GATED,
+	SONA_E2E_SEED_PERSIST_TO: E2E_PERSIST_TO_COMMISSIONS_GATED,
+	SONA_E2E_SEED_OVERLAY: E2E_COMMISSIONS_GATED_OVERLAY
+};
+
 const RECOVERY_SPEC = '**/forgot-reset.spec.ts';
 // storage-breakdown rides the ut-stat server: it also flips the storage
 // provider, which would race the shared server's specs (SONA-192).
@@ -245,11 +277,13 @@ const UPLOAD_SPECS = [
 const SUGGEST_TAGS_SPEC = '**/suggest-tags.spec.ts';
 // registry-sync needs the registry turned on, which no other server has; so does
 // new-artist-handle, whose dialog only classifies handles with the registry on,
-// and share-private-artist, whose Share button only renders with it on.
+// and share-private-artist, whose Share button only renders with it on, and
+// new-artist-import-all, whose Import all footer only renders with it on.
 const REGISTRY_SPECS = [
 	'**/registry-sync.spec.ts',
 	'**/new-artist-handle.spec.ts',
-	'**/share-private-artist.spec.ts'
+	'**/share-private-artist.spec.ts',
+	'**/new-artist-import-all.spec.ts'
 ];
 // tag-suggestions reads the two admin forms with the lookup endpoint
 // intercepted and writes no rows, but it cannot take the parallel project: its
@@ -308,7 +342,9 @@ export default defineConfig({
 				STICKERS_SPEC,
 				...REGISTRY_SPECS,
 				PASSPORT_SPEC,
-				CONVENTIONS_EVENT_SPEC
+				CONVENTIONS_EVENT_SPEC,
+				...COMMISSIONS_SPECS,
+				COMMISSIONS_GATED_SPEC
 			],
 			use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PORT}` }
 		},
@@ -346,6 +382,18 @@ export default defineConfig({
 			testMatch: CONVENTIONS_EVENT_SPEC,
 			workers: 1,
 			use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${CONVENTIONS_EVENT_PORT}` }
+		},
+		{
+			name: 'commissions',
+			testMatch: COMMISSIONS_SPECS,
+			workers: 1,
+			use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${COMMISSIONS_PORT}` }
+		},
+		{
+			name: 'commissions-gated',
+			testMatch: COMMISSIONS_GATED_SPEC,
+			workers: 1,
+			use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${COMMISSIONS_GATED_PORT}` }
 		},
 		{
 			name: 'theme-picker',
@@ -394,6 +442,8 @@ export default defineConfig({
 		webServer(REGISTRY_PORT, registryServerEnv),
 		webServer(PASSPORT_PORT, passportServerEnv),
 		webServer(PASSPORT_EMPTY_PORT, passportEmptyServerEnv),
-		webServer(CONVENTIONS_EVENT_PORT, conventionsEventServerEnv)
+		webServer(CONVENTIONS_EVENT_PORT, conventionsEventServerEnv),
+		webServer(COMMISSIONS_PORT, commissionsServerEnv),
+		webServer(COMMISSIONS_GATED_PORT, commissionsGatedServerEnv)
 	]
 });
