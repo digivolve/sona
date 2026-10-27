@@ -1072,6 +1072,53 @@ test('a draft typed against an older copy of the entry is dropped on return', as
 	await expect(kind).toHaveValue(keptKind);
 });
 
+// A Back that lands while the ledger is still loading can show the edit page
+// SvelteKit already holds without loading it again. That only happens on a
+// slow first load (a fresh server), so this checks that the save refreshes
+// the edit page's data before it leaves, and that Back shows what was saved.
+test('saving an edit refreshes the entry before leaving, so Back shows what was saved', async ({ page }) => {
+	await loginRetrying(page, PASSWORD);
+	await open(page, '/admin/commissions');
+	const editUrl = await page.getByRole('link', { name: new RegExp(`^Edit ${TITLE}`) }).getAttribute('href');
+	await open(page, editUrl!);
+	const kind = page.getByLabel('Kind');
+	const keptKind = await kind.inputValue();
+
+	const loads: string[] = [];
+	page.on('request', (r) => {
+		const path = new URL(r.url()).pathname;
+		if (r.method() === 'POST') loads.push('save');
+		else if (path === `${editUrl}/__data.json`) loads.push('entry');
+		else if (path === '/admin/commissions/__data.json') loads.push('ledger');
+	});
+	await kind.fill('E2E saved before Back');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+	expect(loads).toEqual(['save', 'entry', 'ledger']);
+
+	await page.goBack();
+	await expect(kind).toHaveValue('E2E saved before Back');
+
+	// The form saves from there as the current version, not a stale one.
+	await kind.fill('E2E saved again');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+
+	// When the refresh itself fails, SvelteKit loads the edit page in full: it
+	// shows the saved entry, and nothing is left saving.
+	await open(page, editUrl!);
+	await kind.fill(keptKind);
+	await page.route(`**${editUrl}/__data.json*`, (route) => route.abort());
+	const reload = page.waitForRequest((r) => r.resourceType() === 'document');
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await reload;
+	await page.unroute(`**${editUrl}/__data.json*`);
+	await waitForHydration(page);
+	await expect(page).toHaveURL(new RegExp(`${editUrl}$`));
+	await expect(kind).toHaveValue(keptKind);
+	await expect(page.getByRole('button', { name: 'Save changes' })).toBeEnabled();
+});
+
 test('Reload entry takes away the draft-is-back line', async ({ page, context }) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions');
