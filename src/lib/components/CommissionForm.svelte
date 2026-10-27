@@ -2,9 +2,10 @@
 	import { onMount, tick, type Snippet } from 'svelte';
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
-	import { Check, CircleAlert, Loader2, Plus, RefreshCw } from 'lucide-svelte';
+	import { Check, CircleAlert, ImagePlus, Loader2, Plus, RefreshCw } from 'lucide-svelte';
 	import CurrencyPicker from '$lib/components/CurrencyPicker.svelte';
 	import NewArtistDialog from '$lib/components/NewArtistDialog.svelte';
+	import PieceThumb from '$lib/components/PieceThumb.svelte';
 	import LiveAnnouncer from '$lib/components/LiveAnnouncer.svelte';
 	import { Announcer } from '$lib/live-announcer.svelte';
 	import { toast } from '$lib/toast.svelte';
@@ -16,6 +17,8 @@
 		PAYMENT_LABELS,
 		STATUS_LABELS,
 		TITLE_MAX,
+		canAddToGallery,
+		changedFields,
 		currencyFractionDigits,
 		datesAfterStatusChange,
 		FIELD_ORDER,
@@ -38,6 +41,8 @@
 	interface EntryInit extends CommissionFormEntry {
 		id: number;
 		version: string;
+		/** The gallery piece the entry is linked to, if any. */
+		piece: { id: number; title: string; thumb: string | null } | null;
 	}
 	interface FailureData {
 		errors?: Partial<Record<CommissionField, string>>;
@@ -197,6 +202,11 @@
 			: [...values.characterIds, id];
 	}
 
+	// The Gallery panel works from the saved entry, so unsaved changes hold it
+	// back: the upload would start from what's saved, not from what's typed.
+	const dirty = $derived(changedFields(loaded, values).length > 0 || values.notes !== loaded.notes);
+	const galleryOpen = $derived(canAddToGallery(loaded.status));
+
 	/** Loads the entry as it is now, and puts the unsaved note back in Notes. */
 	async function reloadEntry() {
 		const typedNote = values.notes;
@@ -307,6 +317,59 @@
 			{/if}
 		</div>
 	</div>
+{/if}
+
+{#snippet galleryButton(label: string, primary: boolean, described: boolean)}
+	{@const tone = primary ? 'btn-primary' : 'btn-secondary'}
+	{@const Icon = entry?.piece ? Plus : ImagePlus}
+	{#if dirty}
+		<button type="button" class="btn {tone}" aria-disabled="true" aria-describedby="ce-gallery-hint">
+			<Icon size={16} aria-hidden="true" />
+			{label}
+		</button>
+	{:else}
+		<a
+			class="btn {tone}"
+			href="/admin/upload?commission={entry?.id}"
+			aria-describedby={described ? 'ce-gallery-hint' : undefined}
+		>
+			<Icon size={16} aria-hidden="true" />
+			{label}
+		</a>
+	{/if}
+{/snippet}
+
+{#if entry}
+	<!-- Add to gallery opens the upload form prefilled from the saved entry. A
+	     piece already linked takes variants instead. -->
+	<section class="gallery-panel" aria-labelledby="ce-gallery-h">
+		<h2 id="ce-gallery-h">{m.admin_commissions_legend_gallery()}</h2>
+		<div class="gallery-row">
+			{#if entry.piece}
+				<PieceThumb src={entry.piece.thumb} />
+				<div class="text">
+					<a href="/admin/images/{entry.piece.id}/edit">{entry.piece.title}</a>
+					{#if galleryOpen && dirty}<span class="hint" id="ce-gallery-hint">{m.admin_commissions_gallery_hint_dirty()}</span>{/if}
+				</div>
+				{#if galleryOpen}{@render galleryButton(m.admin_commissions_add_variant(), false, dirty)}{/if}
+			{:else if !galleryOpen}
+				<div class="text"><span>{m.admin_commissions_gallery_closed()}</span></div>
+			{:else}
+				{@const delivered = loaded.status === 'delivered'}
+				<div class="text">
+					<span>{m.admin_commissions_not_in_gallery()}</span>
+					<span class="hint" id="ce-gallery-hint"
+						>{dirty
+							? m.admin_commissions_gallery_hint_dirty()
+							: delivered
+								? m.admin_commissions_gallery_hint_delivered()
+								: m.admin_commissions_gallery_hint_active()}</span
+					>
+				</div>
+				{@render galleryButton(m.admin_commissions_add_to_gallery(), delivered, true)}
+			{/if}
+		</div>
+	</section>
 {/if}
 
 <form
@@ -640,6 +703,16 @@
 
 <style>
 	.form { display: flex; flex-direction: column; gap: 20px; max-width: 800px; }
+
+	.gallery-panel {
+		border: 1px solid var(--border); border-radius: var(--radius-s); padding: 16px;
+		display: flex; flex-direction: column; gap: 12px; max-width: 800px; margin-bottom: 20px;
+		background: var(--card);
+	}
+	.gallery-panel h2 { font-size: 16px; margin: 0; }
+	.gallery-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+	.gallery-row .text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 12rem; font-size: 14px; overflow-wrap: anywhere; }
+	.gallery-row .text a { color: var(--foreground); text-decoration: underline; }
 	.form fieldset {
 		border: 1px solid var(--border); border-radius: var(--radius-s); padding: 16px;
 		display: flex; flex-direction: column; gap: 16px; min-width: 0; margin: 0;
