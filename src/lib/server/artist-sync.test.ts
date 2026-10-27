@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './db/schema';
 import { artists, siteSettings } from './db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { describeSync, pickRefreshedAvatar, syncArtists } from './artist-sync';
 import type { SiteSettings } from './settings';
 
@@ -46,8 +46,14 @@ function makeDb() {
 		twitter_url TEXT, bluesky_url TEXT, telegram_url TEXT, furaffinity_url TEXT,
 		deviantart_url TEXT, patreon_url TEXT, instagram_url TEXT,
 		global_id TEXT UNIQUE, registry_version INTEGER, registry_synced_at TEXT,
-		aliases TEXT, avatar_resolved_at TEXT, created_at TEXT NOT NULL
-	);`);
+		aliases TEXT, avatar_resolved_at TEXT, ledger_private INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+	);
+	CREATE TABLE images (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, published INTEGER NOT NULL DEFAULT 1, parent_image_id INTEGER);
+	CREATE TABLE stickers (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER, pack_id INTEGER);
+	CREATE TABLE sticker_packs (id INTEGER PRIMARY KEY AUTOINCREMENT, manager_artist_id INTEGER, published INTEGER NOT NULL DEFAULT 1);
+	CREATE TABLE avatar_credits (avatar_id INTEGER NOT NULL, artist_id INTEGER NOT NULL);
+	CREATE TABLE vr_avatars (id INTEGER PRIMARY KEY AUTOINCREMENT, published INTEGER NOT NULL DEFAULT 1);
+	CREATE TABLE commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL);`);
 	return drizzle(makeD1(sqlite), { schema });
 }
 
@@ -406,6 +412,51 @@ describe('syncArtists backfill — identity verification', () => {
 		const row = await db.select().from(artists).where(eq(artists.name, 'mlyeko')).get();
 		expect(row?.globalId).toBe('g-mlyeko');
 		expect(row?.registryVersion).toBe(7);
+	});
+
+	// SONA-236: the search sends the artist's handle to the shared registry, so
+	// an artist who exists only for a private commission entry is never searched.
+	it('skips an artist who exists only for commission entries, and searches one with other work', async () => {
+		const db = makeDb();
+		await db.insert(artists).values([
+			{ id: 1, name: 'ledger only', twitterUrl: 'https://twitter.com/ledgeronly', createdAt: now },
+			{ id: 2, name: 'has a piece', twitterUrl: 'https://twitter.com/hasapiece', createdAt: now },
+			{ id: 3, name: 'has a sticker', twitterUrl: 'https://twitter.com/hasasticker', createdAt: now },
+			{ id: 4, name: 'manages a pack', twitterUrl: 'https://twitter.com/managesapack', createdAt: now },
+			{ id: 5, name: 'has a credit', twitterUrl: 'https://twitter.com/hasacredit', createdAt: now }
+		]);
+		await db.run(sql`INSERT INTO commissions (artist_id) VALUES (1), (2), (3), (4), (5)`);
+		await db.run(sql`INSERT INTO images (artist_id) VALUES (2)`);
+		await db.run(sql`INSERT INTO stickers (artist_id) VALUES (3)`);
+		await db.run(sql`INSERT INTO sticker_packs (manager_artist_id) VALUES (4)`);
+		await db.run(sql`INSERT INTO avatar_credits (avatar_id, artist_id) VALUES (1, 5)`);
+
+		stubRegistry([]);
+
+		await syncArtists(db, ENV, SETTINGS);
+		const searched = searchCalls().map(([url]) => decodeURIComponent(String(url)));
+		expect(searched.some((u) => u.includes('ledgeronly'))).toBe(false);
+		for (const handle of ['hasapiece', 'hasasticker', 'managesapack', 'hasacredit']) {
+			expect(searched.some((u) => u.includes(handle)), handle).toBe(true);
+		}
+	});
+
+	// Q26: the owner's "keep private" flag skips the search with no entries at
+	// all, until work by the artist is published.
+	it('skips a flagged artist with no entries, and searches them once a piece by them is published', async () => {
+		const db = makeDb();
+		await db.insert(artists).values([
+			{ id: 1, name: 'flagged', twitterUrl: 'https://twitter.com/flaggedonly', ledgerPrivate: true, createdAt: now },
+			{ id: 2, name: 'flagged published', twitterUrl: 'https://twitter.com/flaggedpub', ledgerPrivate: true, createdAt: now }
+		]);
+		await db.run(sql`INSERT INTO images (artist_id, published) VALUES (2, 1)`);
+
+		stubRegistry([]);
+
+		await syncArtists(db, ENV, SETTINGS);
+		const searched = searchCalls().map(([url]) => decodeURIComponent(String(url)));
+		expect(searched.some((u) => u.includes('flaggedonly'))).toBe(false);
+		expect(searched.some((u) => u.includes('flaggedpub'))).toBe(true);
 	});
 
 	it('leaves the artist unlinked when the search returns no candidates', async () => {

@@ -26,7 +26,7 @@ function makeDb(envExtra: Record<string, string> = {}) {
 			twitter_url TEXT, bluesky_url TEXT, telegram_url TEXT, furaffinity_url TEXT,
 			deviantart_url TEXT, patreon_url TEXT, instagram_url TEXT,
 			global_id TEXT UNIQUE, registry_version INTEGER, registry_synced_at TEXT,
-			aliases TEXT, avatar_resolved_at TEXT, created_at TEXT NOT NULL
+			aliases TEXT, avatar_resolved_at TEXT, ledger_private INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 		);
 		CREATE TABLE images (
 			id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, slug TEXT NOT NULL,
@@ -43,7 +43,10 @@ function makeDb(envExtra: Record<string, string> = {}) {
 		CREATE TABLE image_characters (image_id INTEGER NOT NULL, character_id INTEGER NOT NULL);
 		CREATE TABLE fursuit_photos (id INTEGER PRIMARY KEY AUTOINCREMENT);
 		CREATE TABLE vr_avatars (id INTEGER PRIMARY KEY AUTOINCREMENT, published INTEGER NOT NULL DEFAULT 1);
-		CREATE TABLE sticker_packs (id INTEGER PRIMARY KEY AUTOINCREMENT, published INTEGER NOT NULL DEFAULT 1);
+		CREATE TABLE sticker_packs (id INTEGER PRIMARY KEY AUTOINCREMENT, published INTEGER NOT NULL DEFAULT 1, manager_artist_id INTEGER);
+		CREATE TABLE stickers (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER, pack_id INTEGER);
+		CREATE TABLE avatar_credits (avatar_id INTEGER NOT NULL, artist_id INTEGER NOT NULL);
+		CREATE TABLE commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL);
 	`);
 	const d1 = makeD1(sqlite);
 	return {
@@ -238,6 +241,74 @@ describe('gallery load — former-name (alias) resolution', () => {
 		expect(data.filters.artist).toBe('Draft');
 		expect(data.images).toHaveLength(0);
 		expect(data.degraded).toBe(false);
+	});
+
+	it('resolves an alias that matches only a ledger-only artist, so the private name stays hidden', async () => {
+		// "Draft" exists only for a private commission entry (SONA-236). If it
+		// counted as a current name, the missing banner would reveal it exists.
+		const { db, platform } = makeDb();
+		const [{ id: draftId }] = await addArtist(db, 'Draft');
+		await db.run(sqlq`INSERT INTO commissions (artist_id) VALUES (${draftId})`);
+		const [{ id: phoenixId }] = await addArtist(
+			db,
+			'Phoenix',
+			JSON.stringify([{ displayName: 'Draft', socials: {} }])
+		);
+		await addImage(db, { artistId: phoenixId, published: true });
+
+		const data = await loadData(platform, '?artist=Draft');
+		expect(data.formerName).toEqual({ searched: 'Draft', current: 'Phoenix' });
+		expect(data.images).toHaveLength(1);
+	});
+
+	it('treats a "keep private" artist with no entries like a ledger-only one until a piece by them is published', async () => {
+		// Q26: the flag alone makes "Draft" private, so its name doesn't block
+		// Phoenix's former name. Once a piece by Draft is published, Draft is a
+		// real current name again and is never hijacked into Phoenix.
+		const { db, platform } = makeDb();
+		const [{ id: draftId }] = await db
+			.insert(artists)
+			.values({ name: 'Draft', ledgerPrivate: true })
+			.returning({ id: artists.id });
+		const [{ id: phoenixId }] = await addArtist(
+			db,
+			'Phoenix',
+			JSON.stringify([{ displayName: 'Draft', socials: {} }])
+		);
+		await addImage(db, { artistId: phoenixId, published: true });
+
+		const before = await loadData(platform, '?artist=Draft');
+		expect(before.formerName).toEqual({ searched: 'Draft', current: 'Phoenix' });
+
+		await addImage(db, { artistId: draftId, published: true });
+		const after = await loadData(platform, '?artist=Draft');
+		expect(after.formerName).toBeNull();
+		expect(after.filters.artist).toBe('Draft');
+		expect(after.images).toHaveLength(1);
+	});
+
+	it('resolves a "keep private" artist\'s own former name only once a piece by them is published', async () => {
+		// The flagged artist owns the alias here: with no public work they aren't
+		// a candidate, so their old name points nowhere; a published piece makes
+		// them one.
+		const { db, platform } = makeDb();
+		const [{ id }] = await db
+			.insert(artists)
+			.values({
+				name: 'Quiet',
+				aliases: JSON.stringify([{ displayName: 'OldQuiet', socials: {} }]),
+				ledgerPrivate: true
+			})
+			.returning({ id: artists.id });
+
+		const before = await loadData(platform, '?artist=OldQuiet');
+		expect(before.formerName).toBeNull();
+		expect(before.images).toHaveLength(0);
+
+		await addImage(db, { artistId: id, published: true });
+		const after = await loadData(platform, '?artist=OldQuiet');
+		expect(after.formerName).toEqual({ searched: 'OldQuiet', current: 'Quiet' });
+		expect(after.images).toHaveLength(1);
 	});
 
 	it('does not resolve a former name claimed only by a non-live artist', async () => {

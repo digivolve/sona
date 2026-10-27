@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // @ts-expect-error - no declaration file for 'better-sqlite3'
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import * as schema from '$lib/server/db/schema';
 import { siteSettings } from '$lib/server/db/schema';
 import { REGISTRY_API_KEY_SETTING } from '$lib/server/registry';
@@ -29,15 +29,17 @@ function makeDb() {
 		twitter_url TEXT, bluesky_url TEXT, telegram_url TEXT, furaffinity_url TEXT,
 		deviantart_url TEXT, patreon_url TEXT, instagram_url TEXT,
 		global_id TEXT UNIQUE, registry_version INTEGER, registry_synced_at TEXT,
-		aliases TEXT, avatar_resolved_at TEXT, created_at TEXT NOT NULL
+		aliases TEXT, avatar_resolved_at TEXT, ledger_private INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 	);
-	CREATE TABLE images (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL);
-	CREATE TABLE stickers (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL);
-	CREATE TABLE sticker_packs (id INTEGER PRIMARY KEY AUTOINCREMENT, manager_artist_id INTEGER);
+	CREATE TABLE images (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, published INTEGER NOT NULL DEFAULT 1, parent_image_id INTEGER);
+	CREATE TABLE stickers (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL, pack_id INTEGER);
+	CREATE TABLE sticker_packs (id INTEGER PRIMARY KEY AUTOINCREMENT, manager_artist_id INTEGER, published INTEGER NOT NULL DEFAULT 1);
 	CREATE TABLE avatar_credits (
 		avatar_id INTEGER NOT NULL, artist_id INTEGER NOT NULL, role TEXT NOT NULL,
 		role_label TEXT, position INTEGER NOT NULL DEFAULT 0
-	);`);
+	);
+	CREATE TABLE vr_avatars (id INTEGER PRIMARY KEY AUTOINCREMENT, published INTEGER NOT NULL DEFAULT 1);
+	CREATE TABLE commissions (id INTEGER PRIMARY KEY AUTOINCREMENT, artist_id INTEGER NOT NULL);`);
 	const d1 = makeD1(sqlite);
 	return { db: drizzle(d1, { schema }), platform: { env: { DB: d1 } } as unknown as App.Platform };
 }
@@ -120,6 +122,30 @@ describe('admin artists load — former names (aliases)', () => {
 
 		const result = (await load(loadEvent(platform))) as { artists: Array<{ formerly: string[] }> };
 		expect(result.artists.map((a) => a.formerly)).toEqual([[], []]);
+	});
+});
+
+describe('admin artists load — the private tag (SONA-236)', () => {
+	async function privateByName(platform: App.Platform) {
+		const result = (await load(loadEvent(platform))) as { artists: Array<{ name: string; isPrivate: number }> };
+		return Object.fromEntries(result.artists.map((a) => [a.name, Boolean(a.isPrivate)]));
+	}
+
+	it('tags a flagged artist until work by them is published', async () => {
+		const { db, platform } = makeDb();
+		const flagged = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
+		await db.insert(schema.artists).values({ name: 'Open' });
+		expect(await privateByName(platform)).toEqual({ Open: false, Quill: true });
+
+		await db.run(sql`INSERT INTO images (artist_id, published) VALUES (${flagged.id}, 1)`);
+		expect((await privateByName(platform)).Quill).toBe(false);
+	});
+
+	it('tags an artist who exists only for ledger entries', async () => {
+		const { db, platform } = makeDb();
+		const id = await seedArtist(db, 'EntryOnly');
+		await db.run(sql`INSERT INTO commissions (artist_id) VALUES (${id})`);
+		expect((await privateByName(platform)).EntryOnly).toBe(true);
 	});
 });
 
@@ -530,9 +556,10 @@ describe('submitToRegistry action — surfaces the registry outcome', () => {
 		return row.id;
 	}
 
-	function submitEvent(platform: App.Platform, id: number) {
+	function submitEvent(platform: App.Platform, id: number, fields: Record<string, string> = {}) {
 		const body = new FormData();
 		body.append('id', String(id));
+		for (const [k, v] of Object.entries(fields)) body.append(k, v);
 		return {
 			platform,
 			url: new URL('http://localhost/admin/artists'),
@@ -698,6 +725,68 @@ describe('submitToRegistry action — surfaces the registry outcome', () => {
 		expect((result as { data: { error: string } }).data.error).toMatch(/registry version/i);
 		expect(mockRegistrySubmit).not.toHaveBeenCalled();
 	});
+
+	// AS8: a ledger-only artist (SONA-236) can still be shared, but only after the
+	// page asks. Without confirmPrivate the action refuses and says why, so the
+	// page can show its confirm step; nothing goes to the registry.
+	describe('ledger-only artists ask first', () => {
+		const pending = { id: 1, status: 'pending', matchedGlobalId: null };
+
+		it('refuses a flagged artist without the confirm field, and sends nothing', async () => {
+			const { db, platform } = makeDb();
+			const id = await seedEnabledArtist(db, { ledgerPrivate: true });
+			mockRegistrySubmit.mockResolvedValue(pending);
+
+			const result = await actions.submitToRegistry(submitEvent(platform, id));
+			expect(result).toMatchObject({ status: 409, data: { confirmPrivate: true, id } });
+			expect(mockRegistrySubmit).not.toHaveBeenCalled();
+		});
+
+		it('refuses an artist who has only commission entries without the confirm field', async () => {
+			const { db, platform } = makeDb();
+			const id = await seedEnabledArtist(db);
+			await db.run(sql`INSERT INTO commissions (artist_id) VALUES (${id})`);
+			mockRegistrySubmit.mockResolvedValue(pending);
+
+			const result = await actions.submitToRegistry(submitEvent(platform, id));
+			expect(result).toMatchObject({ status: 409, data: { confirmPrivate: true } });
+			expect(mockRegistrySubmit).not.toHaveBeenCalled();
+		});
+
+		it('submits a flagged artist when the confirm field is present', async () => {
+			const { db, platform } = makeDb();
+			const id = await seedEnabledArtist(db, { ledgerPrivate: true });
+			mockRegistrySubmit.mockResolvedValue(pending);
+
+			const result = await actions.submitToRegistry(submitEvent(platform, id, { confirmPrivate: '1' }));
+			expect(result).toEqual({ success: true, submitted: true });
+			expect(mockRegistrySubmit).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ kind: 'create', payload: expect.objectContaining({ displayName: 'Nyx' }) })
+			);
+		});
+
+		it('submits a non-private artist with no confirm field', async () => {
+			const { db, platform } = makeDb();
+			const id = await seedEnabledArtist(db);
+			await db.run(sql`INSERT INTO commissions (artist_id) VALUES (${id})`);
+			await db.run(sql`INSERT INTO images (artist_id) VALUES (${id})`);
+			mockRegistrySubmit.mockResolvedValue(pending);
+
+			const result = await actions.submitToRegistry(submitEvent(platform, id));
+			expect(result).toEqual({ success: true, submitted: true });
+		});
+
+		it('submits a flagged artist with no confirm field once a piece by them is published', async () => {
+			const { db, platform } = makeDb();
+			const id = await seedEnabledArtist(db, { ledgerPrivate: true });
+			await db.run(sql`INSERT INTO images (artist_id, published) VALUES (${id}, 1)`);
+			mockRegistrySubmit.mockResolvedValue(pending);
+
+			const result = await actions.submitToRegistry(submitEvent(platform, id));
+			expect(result).toEqual({ success: true, submitted: true });
+		});
+	});
 });
 
 function updateEvent(platform: App.Platform, fields: Record<string, string>) {
@@ -709,6 +798,212 @@ function updateEvent(platform: App.Platform, fields: Record<string, string>) {
 		request: new Request('http://localhost/admin/artists', { method: 'POST', body })
 	} as never;
 }
+
+describe('update action — ledger-only artists stay on the site (SONA-236)', () => {
+	async function seedWithEntry(db: ReturnType<typeof makeDb>['db'], withPiece: boolean) {
+		const row = await db.insert(schema.artists).values({ name: 'Quill' }).returning({ id: schema.artists.id }).get();
+		// This file's tables carry only the columns the ledger-only check reads.
+		await db.run(sql`INSERT INTO commissions (artist_id) VALUES (${row.id})`);
+		if (withPiece) await db.run(sql`INSERT INTO images (artist_id) VALUES (${row.id})`);
+		return row.id;
+	}
+
+	it('saves the new links without looking up the avatar', async () => {
+		const { db, platform } = makeDb();
+		const fetchSpy = vi.fn(() => Promise.reject(new Error('offline')));
+		vi.stubGlobal('fetch', fetchSpy);
+		const id = await seedWithEntry(db, false);
+
+		const result = await actions.update(
+			updateEvent(platform, { id: String(id), name: 'Quill', bluesky: 'quill.bsky.social', twitter: 'quill_art' })
+		);
+		expect(result).toEqual({ success: true });
+		expect(fetchSpy).not.toHaveBeenCalled();
+
+		const after = await db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
+		expect(after!.blueskyUrl).toBe('https://bsky.app/profile/quill.bsky.social');
+		expect(after!.twitterUrl).toBe('https://twitter.com/quill_art');
+		expect(after!.avatarUrl).toBeNull();
+	});
+
+	it('still looks up the avatar once the artist has a piece on the site', async () => {
+		const { db, platform } = makeDb();
+		// The profile answers; the CDN copy stays offline, so the source link is kept.
+		const resolvedAvatar = 'https://cdn.bsky.app/img/avatar/plain/quill.jpg';
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const id = await seedWithEntry(db, true);
+
+		await actions.update(updateEvent(platform, { id: String(id), name: 'Quill', bluesky: 'quill.bsky.social' }));
+		const after = await db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
+	});
+});
+
+// Q26: the "keep private (commission ledger only)" checkbox on the edit form.
+describe('update action — the keep-private flag', () => {
+	const resolvedAvatar = 'https://cdn.bsky.app/img/avatar/plain/quill.jpg';
+	const save = (platform: App.Platform, id: number, extra: Record<string, string> = {}) =>
+		actions.update(updateEvent(platform, { id: String(id), name: 'Quill', bluesky: 'quill.bsky.social', ...extra }));
+	const read = (db: ReturnType<typeof makeDb>['db'], id: number) =>
+		db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
+
+	it('keeps a flagged artist with no entries from the avatar lookup', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
+
+		expect(await save(platform, row.id, { ledgerPrivate: 'on' })).toEqual({ success: true });
+		const after = await read(db, row.id);
+		expect(after!.avatarUrl).toBeNull();
+		expect(after!.ledgerPrivate).toBe(true);
+	});
+
+	it('skips the lookup in the same save that ticks the box', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const id = await seedArtist(db, 'Quill');
+
+		await save(platform, id, { ledgerPrivate: 'on' });
+		const after = await read(db, id);
+		expect(after!.ledgerPrivate).toBe(true);
+		expect(after!.avatarUrl).toBeNull();
+	});
+
+	it('clears the flag and looks up the avatar when the box is unticked', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
+
+		await save(platform, row.id);
+		const after = await read(db, row.id);
+		expect(after!.ledgerPrivate).toBe(false);
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
+	});
+
+	it('looks up the avatar for a flagged artist once a piece by them is published', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
+		await db.run(sql`INSERT INTO images (artist_id, published) VALUES (${row.id}, 1)`);
+
+		await save(platform, row.id, { ledgerPrivate: 'on' });
+		expect((await read(db, row.id))!.avatarUrl).toBe(resolvedAvatar);
+	});
+
+	it('still keeps a flagged artist private when their only piece is a draft', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
+		await db.run(sql`INSERT INTO images (artist_id, published) VALUES (${row.id}, 0)`);
+
+		await save(platform, row.id, { ledgerPrivate: 'on' });
+		expect((await read(db, row.id))!.avatarUrl).toBeNull();
+	});
+
+	// A shared (registry-linked) artist can't be made private: the action stores
+	// the stored flag AND the posted one, so a linked artist can only clear it.
+	it('ignores a posted flag for a registry-linked artist and still looks up the avatar', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db.insert(schema.artists).values({ name: 'Quill', globalId: 'g-quill' }).returning().get();
+
+		await save(platform, row.id, { ledgerPrivate: 'on' });
+		const after = await read(db, row.id);
+		expect(after!.ledgerPrivate).toBe(false);
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
+	});
+
+	it('clears a flagged registry-linked artist\'s flag and looks up the avatar when the box is unticked', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db
+			.insert(schema.artists)
+			.values({ name: 'Quill', globalId: 'g-quill', ledgerPrivate: true })
+			.returning()
+			.get();
+
+		await save(platform, row.id);
+		const after = await read(db, row.id);
+		expect(after!.ledgerPrivate).toBe(false);
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
+	});
+
+	it('keeps a flagged registry-linked artist private and skips the lookup when the box stays ticked', async () => {
+		const { db, platform } = makeDb();
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
+		const row = await db
+			.insert(schema.artists)
+			.values({ name: 'Quill', globalId: 'g-quill', ledgerPrivate: true })
+			.returning()
+			.get();
+
+		await save(platform, row.id, { ledgerPrivate: 'on' });
+		const after = await read(db, row.id);
+		expect(after!.ledgerPrivate).toBe(true);
+		expect(after!.avatarUrl).toBeNull();
+	});
+
+	it('saves nothing, flag included, when the save fails partway', async () => {
+		const { db, platform } = makeDb();
+		const id = await seedArtist(db, 'Quill');
+		// Make the main write (the one that saves the name) fail.
+		await db.run(
+			sql.raw(`CREATE TRIGGER fail_save BEFORE UPDATE OF name ON artists BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+		);
+
+		await expect(save(platform, id, { ledgerPrivate: 'on' })).rejects.toThrow();
+		expect((await read(db, id))!.ledgerPrivate).toBe(false);
+	});
+
+	// The old account's face must never persist under a new handle, and a
+	// private artist's new handle must not be looked up either: clear it instead.
+	describe('a flagged artist with a stored avatar', () => {
+		const storedAvatar = '/img/avatars/quill/alice.jpg';
+		async function seedFlagged(db: ReturnType<typeof makeDb>['db']) {
+			const row = await db
+				.insert(schema.artists)
+				.values({ name: 'Quill', ledgerPrivate: true, avatarUrl: storedAvatar, twitterUrl: 'https://twitter.com/alice' })
+				.returning()
+				.get();
+			return row.id;
+		}
+
+		it('clears the avatar without a lookup when the handle changes', async () => {
+			const { db, platform } = makeDb();
+			const fetchSpy = vi.fn(() => Promise.reject(new Error('offline')));
+			vi.stubGlobal('fetch', fetchSpy);
+			const id = await seedFlagged(db);
+
+			await actions.update(updateEvent(platform, { id: String(id), name: 'Quill', twitter: 'bob', ledgerPrivate: 'on' }));
+			const after = await read(db, id);
+			expect(after!.twitterUrl).toBe('https://twitter.com/bob');
+			expect(after!.avatarUrl).toBeNull();
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it('keeps the avatar without a lookup when the handle is unchanged', async () => {
+			const { db, platform } = makeDb();
+			const fetchSpy = vi.fn(() => Promise.reject(new Error('offline')));
+			vi.stubGlobal('fetch', fetchSpy);
+			const id = await seedFlagged(db);
+
+			await actions.update(updateEvent(platform, { id: String(id), name: 'Quill', twitter: 'alice', ledgerPrivate: 'on' }));
+			expect((await read(db, id))!.avatarUrl).toBe(storedAvatar);
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+	});
+
+	it('shows the stored flag to the edit form', async () => {
+		const { db, platform } = makeDb();
+		await db.insert(schema.artists).values([{ name: 'Open' }, { name: 'Quiet', ledgerPrivate: true }]);
+
+		const result = (await load(loadEvent(platform))) as { artists: Array<{ name: string; ledgerPrivate: boolean }> };
+		expect(result.artists.map((a) => [a.name, a.ledgerPrivate])).toEqual([
+			['Open', false],
+			['Quiet', true]
+		]);
+	});
+});
 
 describe('update action — avatar clobber guard (#187)', () => {
 	// The default beforeEach stub fails every fetch, so re-resolution comes back null.
@@ -934,6 +1229,21 @@ describe('delete action — VR avatar credits block deletion', () => {
 		expect(result.data.error).toMatch(/VR avatars/);
 		const still = await db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
 		expect(still?.name).toBe('Rigger');
+	});
+
+	it('refuses to delete an artist with commission ledger entries and names them', async () => {
+		const { db, platform } = makeDb();
+		const id = await seedArtist(db, 'Ledger');
+		await db.run(sql`INSERT INTO commissions (artist_id) VALUES (${id}), (${id})`);
+
+		const result = (await actions.delete(deleteEvent(platform, id))) as unknown as {
+			status: number;
+			data: { error: string };
+		};
+
+		expect(result.status).toBe(400);
+		expect(result.data.error).toMatch(/2 commission ledger entries/);
+		expect(await db.select().from(schema.artists).where(eq(schema.artists.id, id)).get()).toBeDefined();
 	});
 
 	it('still deletes an artist with no references', async () => {

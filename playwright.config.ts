@@ -27,6 +27,7 @@ import {
 	E2E_REGISTRY_MOCK,
 	E2E_REGISTRY_SCENARIO,
 	E2E_REGISTRY_URL,
+	E2E_REGISTRY_OVERLAY,
 	E2E_PASSPORT_OVERLAY,
 	E2E_WRANGLER_CONFIG_PASSPORT,
 	E2E_PERSIST_TO_PASSPORT,
@@ -175,11 +176,14 @@ const stickersServerEnv = {
 // The registry-sync spec turns the shared registry ON for its server (key + URL
 // in wrangler.e2e-registry.toml) and steers the preloaded registry interceptor
 // per test through a scenario file. Its own seeded DB + server, serial: the
-// tests share one scenario file and one "Sync now" button.
+// tests share one scenario file and one "Sync now" button. Its overlay
+// (fixtures/registry.sql) adds a linked artist that is already private, which
+// no API can create.
 const registryServerEnv = {
 	SONA_E2E_WRANGLER_CONFIG: E2E_WRANGLER_CONFIG_REGISTRY,
 	SONA_E2E_PERSIST_TO: E2E_PLATFORM_PERSIST_REGISTRY,
 	SONA_E2E_SEED_PERSIST_TO: E2E_PERSIST_TO_REGISTRY,
+	SONA_E2E_SEED_OVERLAY: E2E_REGISTRY_OVERLAY,
 	SONA_E2E_REGISTRY_SCENARIO: E2E_REGISTRY_SCENARIO,
 	SONA_E2E_REGISTRY_URL: E2E_REGISTRY_URL,
 	NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import ${E2E_REGISTRY_MOCK}`.trim()
@@ -240,8 +244,13 @@ const UPLOAD_SPECS = [
 // server (read-only by convention) nor the upload one (SONA-220).
 const SUGGEST_TAGS_SPEC = '**/suggest-tags.spec.ts';
 // registry-sync needs the registry turned on, which no other server has; so does
-// new-artist-handle, whose dialog only classifies handles with the registry on.
-const REGISTRY_SPECS = ['**/registry-sync.spec.ts', '**/new-artist-handle.spec.ts'];
+// new-artist-handle, whose dialog only classifies handles with the registry on,
+// and share-private-artist, whose Share button only renders with it on.
+const REGISTRY_SPECS = [
+	'**/registry-sync.spec.ts',
+	'**/new-artist-handle.spec.ts',
+	'**/share-private-artist.spec.ts'
+];
 // tag-suggestions reads the two admin forms with the lookup endpoint
 // intercepted and writes no rows, but it cannot take the parallel project: its
 // tests log in and then navigate, and a SvelteKit client navigation landing

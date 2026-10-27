@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { goto, invalidateAll } from '$app/navigation';
+	import { tick } from 'svelte';
+	import type { SubmitFunction } from '@sveltejs/kit';
 	import { Search, Plus, Pencil, Trash2, X, Share2, Loader2 } from 'lucide-svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import NewArtistDialog from '$lib/components/NewArtistDialog.svelte';
@@ -28,6 +30,39 @@
 	let deletingId = $state<number | null>(null);
 	let submittingId = $state<number | null>(null);
 	let refreshingAvatars = $state(false);
+	// Submit to registry for a ledger-only artist (SONA-236): the server refuses
+	// without confirmPrivate, and the page asks before resubmitting with it.
+	type ShareTarget = { id: number; globalId: string | null; trigger?: HTMLElement | null };
+	let confirmShare = $state<ShareTarget | null>(null);
+	let confirmShareForm: HTMLFormElement;
+
+	// The enhance callback for every Submit to registry form: the desktop row, the
+	// mobile row, and the hidden Share anyway form (which reads its target when it
+	// submits). A 409 with confirmPrivate opens the Share anyway dialog instead of a
+	// toast. The Share button is disabled while its request is in flight, so focus
+	// falls to <body>; it goes back to that button when the request settles, before
+	// the dialog opens, so the dialog's focus trap returns it there on Cancel or
+	// Escape too.
+	function shareEnhance(getTarget: () => ShareTarget | null): SubmitFunction {
+		return ({ submitter }) => {
+			const target = getTarget();
+			const trigger = submitter ?? target?.trigger ?? null;
+			submittingId = target?.id ?? null;
+			confirmShare = null;
+			return async ({ result, update }) => {
+				await update();
+				submittingId = null;
+				await tick();
+				trigger?.focus();
+				if (result.type === 'success')
+					toast.success(target?.globalId ? m.admin_artists_registry_update_submitted() : m.admin_artists_registry_submitted());
+				else if (result.type === 'failure' && result.data?.confirmPrivate && target)
+					confirmShare = { id: target.id, globalId: target.globalId, trigger };
+				else if (result.type === 'failure')
+					toast.error((result.data?.error as string) ?? m.admin_artists_registry_failed());
+			};
+		};
+	}
 
 	// Search runs SERVER-SIDE across all artists (not just the current page).
 	// Debounce keystrokes into a ?q= navigation; keepFocus so typing isn't interrupted.
@@ -130,6 +165,7 @@
 					<td class="artist-name">
 						{artist.name}
 						{#if artist.globalId}<span class="reg-badge" title={m.admin_artists_shared_title()}>{m.admin_artists_badge_shared()}</span>{/if}
+						{#if artist.isPrivate}<span class="reg-badge private">{m.admin_artists_badge_private()}</span>{/if}
 						{#if data.registryStatus?.[artist.id]?.status === 'pending'}<span class="reg-badge pending" title={m.admin_artists_pending_title()}>{m.admin_artists_badge_pending()}</span>{/if}
 						{#if data.registryStatus?.[artist.id]?.status === 'rejected'}<span class="reg-badge rejected" title={data.registryStatus[artist.id].note ? m.admin_artists_rejected_note({ note: data.registryStatus[artist.id].note ?? '' }) : m.admin_artists_rejected_title()}>{m.admin_artists_badge_rejected()}</span><form method="POST" action="?/dismissRejection" style="display:inline" use:enhance={() => {
 							return async ({ result, update }) => {
@@ -171,17 +207,7 @@
 								method="POST"
 								action="?/submitToRegistry"
 								style="display:inline"
-								use:enhance={() => {
-									submittingId = artist.id;
-									return async ({ result, update }) => {
-										await update();
-										submittingId = null;
-										if (result.type === 'success')
-											toast.success(artist.globalId ? m.admin_artists_registry_update_submitted() : m.admin_artists_registry_submitted());
-										else if (result.type === 'failure')
-											toast.error((result.data?.error as string) ?? m.admin_artists_registry_failed());
-									};
-								}}
+								use:enhance={shareEnhance(() => artist)}
 							>
 								<input type="hidden" name="id" value={artist.id} />
 								<button class="icon-btn" type="submit" disabled={submittingId !== null || data.upToDate?.[artist.id] || !!data.aliasLinked?.[artist.id]} aria-busy={submittingId === artist.id} aria-label={shareLabel(artist.id)} title={shareLabel(artist.id)}>
@@ -220,9 +246,10 @@
 			<div class="mobile-artist-info">
 				<p class="mobile-artist-name">{artist.name}</p>
 				{#if artist.formerly.length}<p class="aka-hint">{m.admin_artists_formerly({ names: artist.formerly.join(', ') })}</p>{/if}
-				{#if artist.globalId || data.registryStatus?.[artist.id]}
+				{#if artist.globalId || artist.isPrivate || data.registryStatus?.[artist.id]}
 					<div class="mobile-artist-badges">
 						{#if artist.globalId}<span class="reg-badge" title={m.admin_artists_shared_title()}>{m.admin_artists_badge_shared()}</span>{/if}
+						{#if artist.isPrivate}<span class="reg-badge private">{m.admin_artists_badge_private()}</span>{/if}
 						{#if data.registryStatus?.[artist.id]?.status === 'pending'}<span class="reg-badge pending" title={m.admin_artists_pending_title()}>{m.admin_artists_badge_pending()}</span>{/if}
 						{#if data.registryStatus?.[artist.id]?.status === 'rejected'}<span class="reg-badge rejected" title={data.registryStatus[artist.id].note ? m.admin_artists_rejected_note({ note: data.registryStatus[artist.id].note ?? '' }) : m.admin_artists_rejected_title()}>{m.admin_artists_badge_rejected()}</span><form method="POST" action="?/dismissRejection" style="display:inline" use:enhance={() => {
 							return async ({ result, update }) => {
@@ -249,17 +276,7 @@
 						method="POST"
 						action="?/submitToRegistry"
 						style="display:inline"
-						use:enhance={() => {
-							submittingId = artist.id;
-							return async ({ result, update }) => {
-								await update();
-								submittingId = null;
-								if (result.type === 'success')
-									toast.success(artist.globalId ? m.admin_artists_registry_update_submitted() : m.admin_artists_registry_submitted());
-								else if (result.type === 'failure')
-									toast.error((result.data?.error as string) ?? m.admin_artists_registry_failed());
-							};
-						}}
+						use:enhance={shareEnhance(() => artist)}
 					>
 						<input type="hidden" name="id" value={artist.id} />
 						<button class="icon-btn" type="submit" disabled={submittingId !== null || data.upToDate?.[artist.id] || !!data.aliasLinked?.[artist.id]} aria-busy={submittingId === artist.id} aria-label={shareLabel(artist.id)} title={shareLabel(artist.id)}>
@@ -307,6 +324,21 @@
 		message={m.admin_artists_delete_message({ name: deleteTarget.name })}
 		onconfirm={() => { deletingId = deleteTarget!.id; deleteForm.requestSubmit(); deleteTarget = null; }}
 		oncancel={() => (deleteTarget = null)}
+	/>
+{/if}
+
+<form method="POST" action="?/submitToRegistry" use:enhance={shareEnhance(() => confirmShare)} bind:this={confirmShareForm} style="display:none">
+	<input type="hidden" name="id" value={confirmShare?.id ?? ''} />
+	<input type="hidden" name="confirmPrivate" value="1" />
+</form>
+
+{#if confirmShare}
+	<ConfirmDialog
+		title={m.admin_artists_share_private_title()}
+		message={m.admin_artists_share_private_message()}
+		confirmLabel={m.admin_artists_share_private_confirm()}
+		onconfirm={() => confirmShareForm.requestSubmit()}
+		oncancel={() => (confirmShare = null)}
 	/>
 {/if}
 
@@ -383,6 +415,17 @@
 					</div>
 				</div>
 
+				<!-- A shared (registry-linked) artist can't be made private; the box shows only so one linked while flagged can clear it. -->
+				{#if !editingArtist.globalId || editingArtist.ledgerPrivate}
+					<div class="private-field">
+						<label class="private-check">
+							<input type="checkbox" name="ledgerPrivate" checked={editingArtist.ledgerPrivate} disabled={saving} aria-describedby="edit-artist-private-hint" />
+							<span>{m.admin_artists_ledger_private()}</span>
+						</label>
+						<p class="private-hint" id="edit-artist-private-hint">{m.admin_artists_ledger_private_hint()}</p>
+					</div>
+				{/if}
+
 				<div class="modal-actions">
 					<button type="button" class="btn btn-secondary" onclick={() => (editingArtist = null)}>{m.admin_cancel()}</button>
 					<button type="submit" class="btn btn-primary" disabled={saving}>
@@ -397,6 +440,7 @@
 {#if showAdd}
 	<NewArtistDialog
 		registryEnabled={data.registryEnabled}
+		allowLedgerPrivate
 		oncreated={async () => { showAdd = false; await invalidateAll(); }}
 		onimportedall={async () => { showAdd = false; await invalidateAll(); }}
 		oncancel={() => (showAdd = false)}
@@ -495,7 +539,8 @@
 		vertical-align: middle;
 	}
 
-	.reg-badge.pending {
+	.reg-badge.pending,
+	.reg-badge.private {
 		color: var(--muted-foreground);
 		border-color: var(--muted-foreground);
 	}
@@ -691,6 +736,37 @@
 		color: var(--muted-foreground);
 		min-width: 14px;
 		text-align: center;
+	}
+
+	.private-field {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.modal-form .private-check {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+		cursor: pointer;
+	}
+
+	/* Same sizes as the New Artist dialog's checkbox, not the field labels above. */
+	.modal-form .private-check > span {
+		font-size: 13px;
+		font-weight: 400;
+		color: var(--foreground);
+	}
+
+	.private-check input {
+		margin: 0;
+		flex-shrink: 0;
+	}
+
+	.private-hint {
+		margin: 0;
+		font-size: 12px;
+		color: var(--muted-foreground);
 	}
 
 	.modal-actions {

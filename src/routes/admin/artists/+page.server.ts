@@ -1,6 +1,6 @@
 import { fail } from '@sveltejs/kit';
 import { getDb } from '$lib/server/db';
-import { artists, images, stickers, stickerPacks, avatarCredits } from '$lib/server/db/schema';
+import { artists, images, stickers, stickerPacks, avatarCredits, commissions } from '$lib/server/db/schema';
 import { eq, sql, like, or } from 'drizzle-orm';
 import {
 	resolveAvatarUrl,
@@ -26,6 +26,7 @@ import { artistDiffersFromRegistry } from '$lib/server/registry-diff';
 import { approvedSubmissionGlobalId, artistInCatalog } from '$lib/server/registry-submissions';
 import { getRawSetting, setRawSetting, getSettings } from '$lib/server/settings';
 import { cleanMessage } from '$lib/server/metrics';
+import { artistIsLedgerOnly } from '$lib/server/artist-visibility';
 import { parseDismissed, addDismissed } from '$lib/server/registry-dismissals';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -78,6 +79,10 @@ export const load: PageServerLoad = async ({ platform, url }) => {
 			instagramUrl: artists.instagramUrl,
 			globalId: artists.globalId,
 			aliases: artists.aliases,
+			ledgerPrivate: artists.ledgerPrivate,
+			// The "private" tag shows what is hidden now, not the stored flag:
+			// publishing work by a flagged artist ends their privacy (SONA-236).
+			isPrivate: sql<number>`${artistIsLedgerOnly(artists.id)}`,
 			createdAt: artists.createdAt,
 			artworkCount: sql<number>`(SELECT COUNT(*) FROM images WHERE images.artist_id = artists.id)`,
 			stickerCount: sql<number>`(SELECT COUNT(*) FROM stickers WHERE stickers.artist_id = artists.id)`,
@@ -251,6 +256,7 @@ export const actions = {
 		const deviantArtUrl = normalizeSocialUrl('deviantart', data.get('deviantart') as string) || null;
 		const patreonUrl = normalizeSocialUrl('patreon', data.get('patreon') as string) || null;
 		const instagramUrl = normalizeSocialUrl('instagram', data.get('instagram') as string) || null;
+		const postedPrivate = data.get('ledgerPrivate') === 'on';
 
 		if (!id) return fail(400, { error: 'Artist ID is required' });
 		if (!name) return fail(400, { error: 'Artist name is required' });
@@ -261,17 +267,32 @@ export const actions = {
 				twitterUrl: artists.twitterUrl,
 				blueskyUrl: artists.blueskyUrl,
 				furAffinityUrl: artists.furAffinityUrl,
-				patreonUrl: artists.patreonUrl
+				patreonUrl: artists.patreonUrl,
+				globalId: artists.globalId,
+				storedPrivate: artists.ledgerPrivate,
+				// Check against the flag this save will store, so ticking it in this
+				// same save already skips the avatar lookup. A registry-linked artist
+				// can only have the flag cleared, never set (stored AND posted): a
+				// shared artist can't be made private (POST /api/artists refuses it
+				// too), but one linked while flagged must still be able to clear it.
+				ledgerOnly: sql<number>`CASE WHEN ${artists.globalId} IS NOT NULL THEN ${artistIsLedgerOnly(artists.id, postedPrivate ? undefined : false)} ELSE ${artistIsLedgerOnly(artists.id, postedPrivate)} END`
 			})
 			.from(artists)
 			.where(eq(artists.id, id))
 			.get();
+		const ledgerPrivate = existing?.globalId ? existing.storedPrivate && postedPrivate : postedPrivate;
 
 		// Resolve + re-host the avatar from social links (stored on our own CDN so it
 		// can't rot to a 404). Rules, in order:
 		//  - EVERY avatar-capable social (bluesky/twitter/FA/patreon) posted empty →
 		//    write null: with nothing left to resolve from, this is a deliberate
 		//    removal and must actually clear a wrong avatar.
+		//  - a ledger-only artist (SONA-236), by entries or by the "keep private"
+		//    flag → never resolve: resolving sends their handle to X or Bluesky,
+		//    which a save doesn't ask for. Keep the stored avatar only while the
+		//    avatar socials are unchanged; a changed handle writes null, since the
+		//    OLD account's face must never persist under the new one. The avatar
+		//    refresh fills a missing one once they have work on the site.
 		//  - avatar socials unchanged AND the stored avatar is already ours → skip
 		//    re-resolution entirely; re-hosting the same source again can't change
 		//    anything.
@@ -287,9 +308,10 @@ export const actions = {
 			patreonUrl === (existing?.patreonUrl ?? null);
 		let avatarUrl = existing?.avatarUrl ?? null;
 		let writeResolved = false;
-		if (!avatarSocialsPosted) {
+		if (!avatarSocialsPosted || (existing?.ledgerOnly && !avatarSocialsUnchanged)) {
 			avatarUrl = null;
 		} else if (
+			!existing?.ledgerOnly &&
 			!(
 				avatarSocialsUnchanged &&
 				existing?.avatarUrl &&
@@ -313,7 +335,7 @@ export const actions = {
 		await db
 			.update(artists)
 			.set({
-				name, twitterUrl, blueskyUrl, telegramUrl, furAffinityUrl, deviantArtUrl, patreonUrl, instagramUrl, avatarUrl,
+				name, twitterUrl, blueskyUrl, telegramUrl, furAffinityUrl, deviantArtUrl, patreonUrl, instagramUrl, avatarUrl, ledgerPrivate,
 				// Stamp only on an actually-written resolve so the refresh cron can still
 				// pick up a row we failed (or refused) to refresh here.
 				...(writeResolved ? { avatarResolvedAt: new Date().toISOString() } : {})
@@ -349,8 +371,20 @@ export const actions = {
 		const id = Number(data.get('id'));
 		if (!id) return fail(400, { error: 'Artist ID is required' });
 
-		const a = await db.select().from(artists).where(eq(artists.id, id)).get();
-		if (!a) return fail(404, { error: 'Artist not found' });
+		const row = await db
+			.select({ artist: artists, ledgerOnly: sql<number>`${artistIsLedgerOnly(artists.id)}` })
+			.from(artists)
+			.where(eq(artists.id, id))
+			.get();
+		if (!row) return fail(404, { error: 'Artist not found' });
+		const a = row.artist;
+
+		// A ledger-only artist (SONA-236) is private until the owner says otherwise:
+		// the page asks first and resubmits with confirmPrivate. No error text, so
+		// the page shows its confirm step instead of an error.
+		if (row.ledgerOnly && data.get('confirmPrivate') !== '1') {
+			return fail(409, { confirmPrivate: true, id });
+		}
 
 		let baseVersion = a.registryVersion ?? undefined;
 		if (a.globalId) {
@@ -477,6 +511,18 @@ export const actions = {
 		if (managedPackRow && managedPackRow.count > 0) {
 			return fail(400, {
 				error: `Cannot delete artist who manages ${managedPackRow.count} sticker pack${managedPackRow.count === 1 ? '' : 's'}. Reassign or remove those packs first.`
+			});
+		}
+
+		// commissions.artist_id is non-cascading too: a private ledger entry keeps its artist.
+		const commissionRow = await db
+			.select({ count: sql<number>`COUNT(*)` })
+			.from(commissions)
+			.where(eq(commissions.artistId, id))
+			.get();
+		if (commissionRow && commissionRow.count > 0) {
+			return fail(400, {
+				error: `Cannot delete artist with ${commissionRow.count} commission ledger entr${commissionRow.count === 1 ? 'y' : 'ies'}. Delete those entries first.`
 			});
 		}
 
