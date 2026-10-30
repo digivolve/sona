@@ -268,19 +268,16 @@ export const actions = {
 				patreonUrl: artists.patreonUrl,
 				globalId: artists.globalId,
 				storedPrivate: artists.ledgerPrivate,
-				hasPublicWork: sql<number>`${artistShownPublicly(artists.id)}`,
-				// Check against the flag this save will store, so ticking it in this
-				// same save already skips the avatar lookup. A registry-linked artist
-				// can only have the flag cleared, never set (stored AND posted): a
-				// shared artist can't be made private (POST /api/artists refuses it
-				// too), but one linked while flagged must still be able to clear it.
-				ledgerOnly: sql<number>`CASE WHEN ${artists.globalId} IS NOT NULL THEN ${artistIsLedgerOnly(artists.id, postedPrivate ? undefined : false)} ELSE ${artistIsLedgerOnly(artists.id, postedPrivate)} END`
+				hasPublicWork: sql<number>`${artistShownPublicly(artists.id)}`
 			})
 			.from(artists)
 			.where(eq(artists.id, id))
 			.get();
 		// An artist with public work is already public, so the box can't be set
-		// for them: it would claim a privacy the site can't give (SONA-236).
+		// for them: it would claim a privacy the site can't give (SONA-236). A
+		// registry-linked artist can only have the flag cleared, never set: a
+		// shared artist can't be made private (POST /api/artists refuses it too),
+		// but one linked while flagged must still be able to clear it.
 		const ledgerPrivate =
 			(existing?.globalId ? existing.storedPrivate && postedPrivate : postedPrivate) && !existing?.hasPublicWork;
 
@@ -289,31 +286,43 @@ export const actions = {
 		//  - EVERY avatar-capable social (bluesky/twitter/FA/patreon) posted empty →
 		//    write null: with nothing left to resolve from, this is a deliberate
 		//    removal and must actually clear a wrong avatar.
-		//  - a "keep private" artist with no public work (SONA-236) → never
-		//    resolve: resolving sends their handle to X or Bluesky,
-		//    which a save doesn't ask for. Keep the stored avatar only while the
-		//    avatar socials are unchanged; a changed handle writes null, since the
-		//    OLD account's face must never persist under the new one. The avatar
-		//    refresh fills a missing one once they have work on the site.
+		//  - "keep private" (SONA-236) doesn't change any of this: it keeps the
+		//    artist off the registry, and their avatar only shows in admin.
 		//  - avatar socials unchanged AND the stored avatar is already ours → skip
 		//    re-resolution entirely; re-hosting the same source again can't change
 		//    anything.
 		//  - otherwise resolve, gated by shouldWriteAvatar: a transient resolve
 		//    failure (null) or a hotlink fallback during an unrelated edit must not
 		//    wipe or downgrade an avatar we host (rationale on shouldWriteAvatar).
+		//    When the avatar socials changed, the guard doesn't apply: the stored
+		//    avatar belongs to the old account.
 		const settings = await getSettings(db);
 		const avatarSocialsPosted = !!(blueskyUrl || twitterUrl || furAffinityUrl || patreonUrl);
+		// Stored values go through the same normalizer as the posted ones: an older
+		// row can hold a raw handle ('nyx.bsky.social') for the same account.
 		const avatarSocialsUnchanged =
-			blueskyUrl === (existing?.blueskyUrl ?? null) &&
-			twitterUrl === (existing?.twitterUrl ?? null) &&
-			furAffinityUrl === (existing?.furAffinityUrl ?? null) &&
-			patreonUrl === (existing?.patreonUrl ?? null);
+			blueskyUrl === (normalizeSocialUrl('bluesky', existing?.blueskyUrl) || null) &&
+			twitterUrl === (normalizeSocialUrl('twitter', existing?.twitterUrl) || null) &&
+			furAffinityUrl === (normalizeSocialUrl('furaffinity', existing?.furAffinityUrl) || null) &&
+			patreonUrl === (normalizeSocialUrl('patreon', existing?.patreonUrl) || null);
+		// The account the avatar comes from: Bluesky when it's set, else X (the
+		// order resolveAvatarUrl tries them; FA and Patreon aren't looked up yet).
+		// Only a change of that account means the stored avatar is someone else's:
+		// a new X handle beside the same Bluesky handle, or an added Patreon link,
+		// is the same face.
+		const avatarSource = (bluesky: string | null, twitter: string | null) =>
+			bluesky ? `bluesky:${bluesky}` : twitter ? `twitter:${twitter}` : null;
+		const avatarAccountChanged =
+			avatarSource(blueskyUrl, twitterUrl) !==
+			avatarSource(
+				normalizeSocialUrl('bluesky', existing?.blueskyUrl) || null,
+				normalizeSocialUrl('twitter', existing?.twitterUrl) || null
+			);
 		let avatarUrl = existing?.avatarUrl ?? null;
 		let writeResolved = false;
-		if (!avatarSocialsPosted || (existing?.ledgerOnly && !avatarSocialsUnchanged)) {
+		if (!avatarSocialsPosted) {
 			avatarUrl = null;
 		} else if (
-			!existing?.ledgerOnly &&
 			!(
 				avatarSocialsUnchanged &&
 				existing?.avatarUrl &&
@@ -332,6 +341,10 @@ export const actions = {
 				resolved
 			);
 			if (writeResolved) avatarUrl = resolved;
+			// A changed handle is a different account, so the stored avatar is the old
+			// account's face: replace it with whatever the lookup found, even a
+			// hotlink, or clear it. Unstamped, the refresh cron tries again later.
+			else if (avatarAccountChanged) avatarUrl = resolved;
 		}
 
 		await db
@@ -339,8 +352,14 @@ export const actions = {
 			.set({
 				name, twitterUrl, blueskyUrl, telegramUrl, furAffinityUrl, deviantArtUrl, patreonUrl, instagramUrl, avatarUrl, ledgerPrivate,
 				// Stamp only on an actually-written resolve so the refresh cron can still
-				// pick up a row we failed (or refused) to refresh here.
-				...(writeResolved ? { avatarResolvedAt: new Date().toISOString() } : {})
+				// pick up a row we failed (or refused) to refresh here. A changed handle
+				// that couldn't be written drops the old account's stamp too, so the
+				// cron, which takes never-stamped rows first, gets to it soon.
+				...(writeResolved
+					? { avatarResolvedAt: new Date().toISOString() }
+					: avatarAccountChanged
+						? { avatarResolvedAt: null }
+						: {})
 			})
 			.where(eq(artists.id, id));
 

@@ -33,19 +33,16 @@ export function artistHasPublicWork(artistId: SQLiteColumn): SQL {
  * Actions that would give a private artist public work, or share them, ask
  * first and clear the box, so the box and this check agree; the public-work
  * clause is the backstop for a path that doesn't.
- * Code that sends artist data off the site on its own, like the daily registry
- * sync, the avatar refresh, and the avatar lookup when an artist is saved,
- * skips them. Submit to registry is the owner's explicit share, so it asks
- * first instead.
+ * Code that shares them off the site on its own, like the daily registry sync,
+ * skips them. Avatar lookups don't: they only fetch a public profile picture,
+ * which shows in admin until the artist has public work. Submit to registry is
+ * the owner's explicit share, so it asks first instead.
  *
  * Takes the artists.id column and reads ledger_private from the same row, so
- * call it with `artists.id` from a query over the artists table. Pass
- * `ledgerPrivate` to test a flag value that isn't stored yet, like the one an
- * edit form is about to save.
+ * call it with `artists.id` from a query over the artists table.
  */
-export function artistIsLedgerOnly(artistId: SQLiteColumn, ledgerPrivate?: boolean): SQL {
-	const flagged = ledgerPrivate === undefined ? sql`artists.ledger_private = 1` : sql`${ledgerPrivate ? 1 : 0} = 1`;
-	return sql`(${flagged} AND NOT ${artistShownPublicly(artistId)})`;
+export function artistIsLedgerOnly(artistId: SQLiteColumn): SQL {
+	return sql`(artists.ledger_private = 1 AND NOT ${artistShownPublicly(artistId)})`;
 }
 
 /**
