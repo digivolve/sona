@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { PageData } from './$types';
 	import { page } from '$app/state';
-	import { CircleCheck, ClipboardList, Eye, ImagePlus, Pencil, Plus } from 'lucide-svelte';
+	import { CircleCheck, ClipboardList, Eye, ImagePlus, Pencil, Plus } from '@lucide/svelte';
 	import ArtistAvatar from '$lib/components/ArtistAvatar.svelte';
 	import CommissionIntro from '$lib/components/CommissionIntro.svelte';
 	import LiveAnnouncer from '$lib/components/LiveAnnouncer.svelte';

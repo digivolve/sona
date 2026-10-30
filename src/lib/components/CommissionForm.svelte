@@ -2,7 +2,7 @@
 	import { onMount, tick, type Snippet } from 'svelte';
 	import { enhance } from '$app/forms';
 	import { invalidateAll } from '$app/navigation';
-	import { Check, CircleAlert, ImagePlus, Loader2, Plus, RefreshCw, TriangleAlert } from 'lucide-svelte';
+	import { Check, CircleAlert, ImagePlus, Loader2, Plus, RefreshCw, TriangleAlert } from '@lucide/svelte';
 	import CurrencyPicker from '$lib/components/CurrencyPicker.svelte';
 	import NewArtistDialog from '$lib/components/NewArtistDialog.svelte';
 	import { SOCIAL_PLATFORM_NAMES } from '$lib/social-label';
