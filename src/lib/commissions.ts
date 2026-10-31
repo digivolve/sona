@@ -34,6 +34,39 @@ export type CommissionPayment = (typeof COMMISSION_PAYMENTS)[number];
 export const TITLE_MAX = 120;
 export const KIND_MAX = 60;
 export const NOTES_MAX = 2000;
+/** "Where it's happening" as plain text, such as "Telegram DM". A link can be
+ * longer, up to sanitizeUrl's cap. */
+export const SOURCE_TEXT_MAX = 120;
+
+/**
+ * The address a "Where it's happening" value links to, or null when the value
+ * is plain text. A link is one word that reads as a web address, with or
+ * without its https:// ("vgen.co/taro" counts). Anything with a space, a
+ * scheme other than http(s), or a host without a dot is text: it's stored and
+ * shown as typed, never as a link, and never sent to the artist lookup.
+ *
+ * Text that a URL parser would still accept stays text too: an email address
+ * or an @handle (an "@" before the path), and a word ending in a period
+ * ("Telegram.") or a host whose last label isn't a real-looking top-level
+ * domain.
+ */
+export function sourceLinkHref(value: string | null | undefined): string | null {
+	const text = value?.trim() ?? '';
+	if (!text || /\s/.test(text)) return null;
+	const authority = text.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0];
+	if (authority.includes('@')) return null;
+	let url: URL;
+	try {
+		url = new URL(/^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+	if (url.username || url.password) return null;
+	const labels = url.hostname.split('.');
+	if (labels.length < 2 || !/^(?:[a-z]{2,}|xn--[a-z0-9-]+)$/i.test(labels[labels.length - 1])) return null;
+	return url.href;
+}
 
 /** The entry form's fields, as the server keys its errors. */
 export type CommissionField =
@@ -44,6 +77,7 @@ export type CommissionField =
 	| 'characterIds'
 	| 'status'
 	| 'payment'
+	| 'receiptUrl'
 	| 'price'
 	| 'currency'
 	| 'notes'
@@ -93,6 +127,17 @@ export const PAYMENT_LABELS: Record<CommissionPayment, EarlyAccessLabel> = {
 	deposit: m.admin_commissions_payment_deposit,
 	paid: m.admin_commissions_payment_paid,
 	refunded: m.admin_commissions_payment_refunded
+};
+
+/** Why Link a piece was refused, in the owner's words, keyed by the action's
+ * `link` reason. A reason not listed here falls back to the generic failure. */
+export const LINK_ERRORS: Partial<Record<string, EarlyAccessLabel>> = {
+	taken: m.admin_commissions_pick_error_taken,
+	variant: m.admin_commissions_pick_error_variant,
+	no_piece: m.admin_commissions_pick_error_no_piece,
+	linked: m.admin_commissions_pick_error_linked,
+	none_picked: m.admin_commissions_pick_error_none,
+	closed: m.admin_commissions_gallery_closed
 };
 
 /** The status chip's tint. The label text carries the status, so the tint is
@@ -271,6 +316,7 @@ export interface CommissionFormValues {
 	characterIds: number[];
 	status: CommissionStatus;
 	payment: CommissionPayment;
+	receiptUrl: string;
 	price: string;
 	currency: string;
 	notes: string;
@@ -288,6 +334,7 @@ export interface CommissionFormEntry {
 	characters: { id: number }[];
 	status: CommissionStatus;
 	payment: CommissionPayment;
+	receiptUrl: string | null;
 	price: string;
 	currency: string | null;
 	notes: string | null;
@@ -306,6 +353,7 @@ export function formValuesOf(entry: CommissionFormEntry | null): CommissionFormV
 		characterIds: entry ? entry.characters.map((c) => c.id) : [],
 		status: entry?.status ?? 'applied',
 		payment: entry?.payment ?? 'unpaid',
+		receiptUrl: entry?.receiptUrl ?? '',
 		price: entry?.price ?? '',
 		currency: entry?.currency ?? '',
 		notes: entry?.notes ?? '',
@@ -326,6 +374,7 @@ export const FIELD_ORDER: CommissionField[] = [
 	'notes',
 	'status',
 	'payment',
+	'receiptUrl',
 	'price',
 	'currency',
 	'requestedOn',
@@ -360,6 +409,7 @@ const FIELD_NAMES: Record<Exclude<CommissionField, 'notes'>, EarlyAccessLabel> =
 	characterIds: m.admin_commissions_field_characters,
 	status: m.admin_commissions_field_status,
 	payment: m.admin_commissions_field_payment,
+	receiptUrl: m.admin_commissions_field_receipt,
 	price: m.admin_commissions_field_price,
 	currency: m.admin_commissions_field_currency,
 	requestedOn: m.admin_commissions_field_requested,

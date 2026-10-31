@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { clearSettingsCache, clearSupporterKeyStatusCache } from '$lib/server/settings';
-import { ledgerDb, restoreRegistry, seedEntry, setLedgerGa } from '$lib/server/test/ledger-db';
-import { load } from './+page.server';
+import { ledgerDb, restoreRegistry, runAction, seedEntry, setLedgerGa } from '$lib/server/test/ledger-db';
+import { actions, load } from './+page.server';
 
 beforeEach(() => {
 	restoreRegistry();
@@ -171,5 +171,88 @@ describe('/admin/commissions load', () => {
 				expect((await run(platform, query)).added, query).toBeNull();
 			}
 		});
+	});
+});
+
+describe('/admin/commissions delete action', () => {
+	const remove = (platform: App.Platform, id: string) => {
+		const form = new FormData();
+		form.set('id', id);
+		return runAction(actions.delete as never, { platform, form });
+	};
+
+	it("deletes only the row's entry, before GA and without a key", async () => {
+		setLedgerGa('future');
+		const { sqlite, platform } = ledgerDb();
+		const gone = seedEntry(sqlite, { title: 'Delete me', characterIds: [1] });
+		seedEntry(sqlite, { title: 'Keep me', characterIds: [1] });
+
+		expect((await remove(platform, String(gone))).status).toBe(200);
+		expect((await run(platform)).entries.map((e) => e.title)).toEqual(['Keep me']);
+	});
+
+	it('404s an unknown or malformed id and deletes nothing', async () => {
+		setLedgerGa('past');
+		const { sqlite, platform } = ledgerDb();
+		seedEntry(sqlite, { title: 'Still here' });
+
+		expect((await remove(platform, '42')).status).toBe(404);
+		expect((await remove(platform, 'abc')).status).toBe(404);
+		expect((await run(platform)).entries.map((e) => e.title)).toEqual(['Still here']);
+	});
+});
+
+// A Delivered row's Link a piece (SONA-236).
+describe('/admin/commissions link action', () => {
+	const link = (platform: App.Platform, fields: Record<string, string>) => {
+		const form = new FormData();
+		for (const [k, v] of Object.entries(fields)) form.set(k, v);
+		return runAction(actions.link as never, { platform, form });
+	};
+	const addPiece = (sqlite: Parameters<typeof seedEntry>[0], id: number) =>
+		sqlite.exec(
+			`INSERT INTO images (id, slug, title, image_url, artist_id, created_at) VALUES (${id}, 'p-${id}', 'Piece ${id}', '/a.png', 1, '2026-10-01')`
+		);
+
+	it("links the piece to that row's entry, and the list shows it", async () => {
+		setLedgerGa('past');
+		const { sqlite, platform } = ledgerDb();
+		addPiece(sqlite, 7);
+		const other = seedEntry(sqlite, { title: 'Other', status: 'delivered' });
+		const id = seedEntry(sqlite, { title: 'Old commission', status: 'delivered' });
+		expect(await link(platform, { id: String(id), imageId: '7', deliveredOn: '2026-10-19' })).toEqual({
+			status: 200,
+			data: { linked: id }
+		});
+		const entries = (await run(platform)).entries;
+		expect(entries.find((e) => e.id === id)!.piece).toEqual({ id: 7, title: 'Piece 7', thumb: '/a.png' });
+		expect(entries.find((e) => e.id === other)!.piece).toBeNull();
+	});
+
+	it('refuses with 403 before GA without a key, and links nothing', async () => {
+		setLedgerGa('future');
+		const { sqlite, platform } = ledgerDb();
+		addPiece(sqlite, 7);
+		const id = seedEntry(sqlite, { status: 'delivered' });
+		expect((await link(platform, { id: String(id), imageId: '7' })).status).toBe(403);
+		expect(sqlite.prepare('SELECT image_id FROM commissions').all()).toEqual([{ image_id: null }]);
+	});
+
+	it('refuses a piece another entry links with a 409, not a 500', async () => {
+		setLedgerGa('past');
+		const { sqlite, platform } = ledgerDb();
+		addPiece(sqlite, 7);
+		const other = seedEntry(sqlite, { title: 'Other', status: 'delivered' });
+		sqlite.prepare('UPDATE commissions SET image_id = 7 WHERE id = ?').run(other);
+		const id = seedEntry(sqlite, { status: 'delivered' });
+		expect(await link(platform, { id: String(id), imageId: '7' })).toEqual({ status: 409, data: { link: 'taken' } });
+	});
+
+	it('404s an unknown or malformed entry id', async () => {
+		setLedgerGa('past');
+		const { sqlite, platform } = ledgerDb();
+		addPiece(sqlite, 7);
+		expect((await link(platform, { id: '42', imageId: '7' })).status).toBe(404);
+		expect((await link(platform, { id: 'abc', imageId: '7' })).status).toBe(404);
 	});
 });

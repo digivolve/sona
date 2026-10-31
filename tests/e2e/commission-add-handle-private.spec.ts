@@ -38,7 +38,7 @@ async function offerAdd(page: Page, link: string, handle: string) {
 	await loginRetrying(page, PASSWORD);
 	await gotoAfterLogin(page, '/admin/commissions/new');
 	await waitForHydration(page);
-	await paste(page.getByLabel('Link to where you asked'), link);
+	await paste(page.getByLabel("Where it's happening"), link);
 	const addHandle = page.locator('.lookup').getByRole('button', { name: `Add ${handle} as a new artist` });
 	await expect(addHandle).toBeVisible();
 	return addHandle;
@@ -57,7 +57,7 @@ test('Add {handle} searches the registry only after Keep private is unticked', a
 	await addHandle.click();
 	const dialog = page.getByRole('dialog', { name: 'New Artist' });
 	await expect(dialog.getByLabel('Artist Name')).toHaveValue(handle);
-	const keepPrivate = dialog.getByLabel('Keep private (commission ledger only)');
+	const keepPrivate = dialog.getByLabel('Keep private');
 	await expect(keepPrivate).toBeChecked();
 	// The guess lines render for a pasted link, so a missing registry line below
 	// is the gate, not the whole block being absent.

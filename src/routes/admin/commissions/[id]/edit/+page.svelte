@@ -10,8 +10,9 @@
 	import CommissionForm from '$lib/components/CommissionForm.svelte';
 	import CommissionIntro from '$lib/components/CommissionIntro.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import PieceChoices from '$lib/components/PieceChoices.svelte';
 	import { toast } from '$lib/toast.svelte';
-	import { commissionDateRows, PAYMENT_LABELS, STATUS_LABELS, STATUS_TONES } from '$lib/commissions';
+	import { commissionDateRows, PAYMENT_LABELS, sourceLinkHref, STATUS_LABELS, STATUS_TONES } from '$lib/commissions';
 	import * as m from '$lib/paraglide/messages';
 	import { draftSnapshot } from '$lib/drafts';
 
@@ -24,6 +25,11 @@
 	// Null only after a save without JavaScript found the entry deleted elsewhere.
 	const entry = $derived(data.entry);
 	const dateRows = $derived(entry ? commissionDateRows(entry) : []);
+	// A stored link opens as one; plain text gets Open chat when the entry's
+	// artist has a Telegram link.
+	const sourceHref = $derived(sourceLinkHref(entry?.sourceUrl));
+	const chatHref = $derived(entry && !sourceHref ? sourceLinkHref(entry.artistTelegramUrl) : null);
+	const receiptHref = $derived(sourceLinkHref(entry?.receiptUrl));
 	// The form stands on what that refused save sent, which `form` carries.
 	const goneEntry = $derived({
 		id: Number(page.params.id),
@@ -35,6 +41,7 @@
 		characters: [],
 		status: 'applied' as const,
 		payment: 'unpaid' as const,
+		receiptUrl: null,
 		price: '',
 		currency: null,
 		notes: null,
@@ -52,6 +59,15 @@
 	// Without the page's script, Delete entry opens this page with
 	// ?delete=confirm, which draws the confirmation in the page.
 	const confirmingInPage = $derived(page.url.searchParams.get('delete') === 'confirm');
+
+	// The page's own picker for a browser without the page's script: a link back
+	// here with the search and scope it asks for.
+	const picker = $derived(entry ? data.picker : null);
+	function pickerHref(scope: 'artist' | 'all', q: string): string {
+		const params = new URLSearchParams({ link: 'pick', scope });
+		if (q) params.set('q', q);
+		return `/admin/commissions/${page.params.id}/edit?${params}#link-piece`;
+	}
 
 	const deleteMessage = $derived(
 		!entry
@@ -119,6 +135,56 @@
 		</form>
 	</section>
 {/if}
+{#if entry && picker}
+	<!-- Link a piece as part of the page, for a browser without the page's
+	     script: the same list the dialog shows, searched by reloading. -->
+	<section class="link-pick" id="link-piece" tabindex="-1" aria-labelledby="link-pick-title">
+		<h2 id="link-pick-title">{m.admin_commissions_link_piece()}</h2>
+		<p>
+			{m.admin_commissions_pick_intro()}
+			{#if entry.status !== 'delivered'}{m.admin_commissions_pick_marks_delivered()}{/if}
+		</p>
+		<form method="GET" action="/admin/commissions/{entry.id}/edit#link-piece" class="link-pick-search" role="search">
+			<input type="hidden" name="link" value="pick" />
+			<input type="hidden" name="scope" value={picker.scope} />
+			<label for="link-pick-q" class="sr-only">{m.admin_commissions_pick_search()}</label>
+			<span class="link-pick-field"
+				><input id="link-pick-q" class="input" type="search" name="q" value={picker.query} placeholder={m.admin_commissions_pick_search()} /></span
+			>
+			<button type="submit" class="btn btn-secondary">{m.admin_commissions_pick_search_button()}</button>
+		</form>
+		<form method="POST" action="?/link" class="link-pick-choices">
+			<input type="hidden" name="version" value={entry.version} />
+			{#if picker.pieces.length > 0}
+				<PieceChoices list={picker} idPrefix="link-pick" />
+			{/if}
+			<p class="hint">
+				{#if picker.pieces.length > 0}
+					{picker.more ? m.admin_commissions_pick_more({ count: picker.pieces.length }) : ''}
+				{:else if picker.query}
+					{m.admin_commissions_pick_no_match({ query: picker.query })}
+				{:else if picker.scope === 'artist'}
+					{m.admin_commissions_pick_none_by_artist({ artist: picker.artistName })}
+				{:else}
+					{m.admin_commissions_pick_none()}
+				{/if}
+			</p>
+			<p>
+				{#if picker.scope === 'artist'}
+					<a href={pickerHref('all', picker.query)}>{m.admin_commissions_pick_search_all()}</a>
+				{:else}
+					<a href={pickerHref('artist', picker.query)}>{m.admin_commissions_pick_artist_only({ artist: picker.artistName })}</a>
+				{/if}
+			</p>
+			<div class="link-pick-actions">
+				<a class="btn btn-secondary" href="/admin/commissions/{entry.id}/edit">{m.admin_cancel()}</a>
+				{#if picker.pieces.length > 0}
+					<button type="submit" class="btn btn-primary">{m.admin_commissions_pick_confirm()}</button>
+				{/if}
+			</div>
+		</form>
+	</section>
+{/if}
 <CommissionIntro gate={data.gate} />
 
 {#if !entry}
@@ -131,6 +197,7 @@
 		{form}
 		gaDate={data.gate.gaDate}
 		recentCurrencies={data.recentCurrencies}
+		recentKinds={data.recentKinds}
 		localeCurrency={data.localeCurrency}
 		registryEnabled={data.registryEnabled}
 	/>
@@ -143,6 +210,7 @@
 		{form}
 		gaDate={data.gate.gaDate}
 		recentCurrencies={data.recentCurrencies}
+		recentKinds={data.recentKinds}
 		localeCurrency={data.localeCurrency}
 		registryEnabled={data.registryEnabled}
 		extraActions={deleteButton}
@@ -166,7 +234,25 @@
 				{#if entry.sourceUrl}
 					<div>
 						<dt>{m.admin_commissions_field_link()}</dt>
-						<dd><a href={entry.sourceUrl} target="_blank" rel="noopener noreferrer">{entry.sourceUrl}</a></dd>
+						<dd>
+							{#if sourceHref}
+								<a href={sourceHref} target="_blank" rel="noopener noreferrer">{entry.sourceUrl}</a>
+							{:else}
+								<!-- The owner's own words, such as "Telegram DM": text, never a
+								     link. The artist's Telegram is the chat it most likely means. -->
+								<span class="source-text">{entry.sourceUrl}</span>
+								{#if chatHref}
+									<a
+										class="open-chat"
+										href={chatHref}
+										target="_blank"
+										rel="noopener noreferrer"
+										aria-label={m.admin_commissions_open_chat_label({ artist: entry.artistName })}
+										>{m.admin_commissions_open_chat()}</a
+									>
+								{/if}
+							{/if}
+						</dd>
 					</div>
 				{/if}
 				<div>
@@ -204,6 +290,12 @@
 					<dd><span class="chip {STATUS_TONES[entry.status]}">{STATUS_LABELS[entry.status]()}</span></dd>
 				</div>
 				<div><dt>{m.admin_commissions_field_payment()}</dt><dd>{PAYMENT_LABELS[entry.payment]()}</dd></div>
+				{#if receiptHref}
+					<div>
+						<dt>{m.admin_commissions_field_receipt()}</dt>
+						<dd><a href={receiptHref} target="_blank" rel="noopener noreferrer">{entry.receiptUrl}</a></dd>
+					</div>
+				{/if}
 				{#if entry.price && entry.currency}
 					<div>
 						<dt>{m.admin_commissions_field_price()}</dt>
@@ -267,6 +359,8 @@
 	.ro-list dt { color: var(--muted-foreground); font-size: 13px; }
 	.ro-list dd { margin: 0; overflow-wrap: anywhere; line-height: 1.5; }
 	.ro-list dd.notes { white-space: pre-line; }
+	.source-text { margin-right: 12px; }
+	.open-chat { white-space: nowrap; }
 	@container (max-width: 480px) {
 		.ro-list > div { grid-template-columns: minmax(0, 1fr); }
 	}
@@ -280,6 +374,20 @@
 	.chip.done { background: color-mix(in srgb, var(--status-ok) 15%, transparent); }
 	.chip.closed { background: transparent; border-color: var(--input); }
 	.readonly-actions { max-width: 800px; display: flex; margin-top: 20px; }
+
+	.link-pick {
+		max-width: 800px; margin-bottom: 20px; padding: 16px;
+		border: 1px solid var(--border); border-radius: var(--radius-s);
+		display: flex; flex-direction: column; gap: 12px;
+	}
+	.link-pick h2 { font-size: 16px; margin: 0; }
+	.link-pick p { font-size: 14px; margin: 0; line-height: 1.5; }
+	.link-pick p.hint { font-size: 13px; color: var(--muted-foreground); }
+	.link-pick p a { color: var(--foreground); text-decoration: underline; }
+	.link-pick-search { display: flex; gap: 8px; }
+	.link-pick-field { flex: 1; min-width: 0; }
+	.link-pick-choices { display: flex; flex-direction: column; gap: 12px; }
+	.link-pick-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 
 	.delete-confirm {
 		max-width: 800px; margin-bottom: 20px; padding: 16px;

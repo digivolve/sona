@@ -810,22 +810,22 @@ describe('update action — Keep private artists stay on the site (SONA-236)', (
 		return row.id;
 	}
 
-	it('saves the new links without looking up the avatar', async () => {
+	it('saves the new links and looks up the avatar while Keep private stays ticked', async () => {
 		const { db, platform } = makeDb();
-		const fetchSpy = vi.fn(() => Promise.reject(new Error('offline')));
-		vi.stubGlobal('fetch', fetchSpy);
+		const resolvedAvatar = 'https://cdn.bsky.app/img/avatar/plain/quill.jpg';
+		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
 		const id = await seedWithEntry(db, true);
 
 		const result = await actions.update(
 			updateEvent(platform, { id: String(id), name: 'Quill', bluesky: 'quill.bsky.social', twitter: 'quill_art', ledgerPrivate: 'on' })
 		);
 		expect(result).toEqual({ success: true });
-		expect(fetchSpy).not.toHaveBeenCalled();
 
 		const after = await db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
 		expect(after!.blueskyUrl).toBe('https://bsky.app/profile/quill.bsky.social');
 		expect(after!.twitterUrl).toBe('https://twitter.com/quill_art');
-		expect(after!.avatarUrl).toBeNull();
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
+		expect(after!.ledgerPrivate).toBe(true);
 	});
 
 	it('looks up the avatar for an artist with only entries when Keep private is unticked', async () => {
@@ -849,18 +849,18 @@ describe('update action — the keep-private flag', () => {
 	const read = (db: ReturnType<typeof makeDb>['db'], id: number) =>
 		db.select().from(schema.artists).where(eq(schema.artists.id, id)).get();
 
-	it('keeps a flagged artist with no entries from the avatar lookup', async () => {
+	it('looks up the avatar for a flagged artist with no entries, and keeps the flag', async () => {
 		const { db, platform } = makeDb();
 		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
 		const row = await db.insert(schema.artists).values({ name: 'Quill', ledgerPrivate: true }).returning().get();
 
 		expect(await save(platform, row.id, { ledgerPrivate: 'on' })).toEqual({ success: true });
 		const after = await read(db, row.id);
-		expect(after!.avatarUrl).toBeNull();
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
 		expect(after!.ledgerPrivate).toBe(true);
 	});
 
-	it('skips the lookup in the same save that ticks the box', async () => {
+	it('looks up the avatar in the same save that ticks the box', async () => {
 		const { db, platform } = makeDb();
 		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
 		const id = await seedArtist(db, 'Quill');
@@ -868,7 +868,7 @@ describe('update action — the keep-private flag', () => {
 		await save(platform, id, { ledgerPrivate: 'on' });
 		const after = await read(db, id);
 		expect(after!.ledgerPrivate).toBe(true);
-		expect(after!.avatarUrl).toBeNull();
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
 	});
 
 	it('clears the flag and looks up the avatar when the box is unticked', async () => {
@@ -947,7 +947,9 @@ describe('update action — the keep-private flag', () => {
 		await db.run(sql`INSERT INTO images (artist_id, published) VALUES (${row.id}, 0)`);
 
 		await save(platform, row.id, { ledgerPrivate: 'on' });
-		expect((await read(db, row.id))!.avatarUrl).toBeNull();
+		const after = await read(db, row.id);
+		expect(after!.ledgerPrivate).toBe(true);
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
 	});
 
 	// A shared (registry-linked) artist can't be made private: the action stores
@@ -978,7 +980,7 @@ describe('update action — the keep-private flag', () => {
 		expect(after!.avatarUrl).toBe(resolvedAvatar);
 	});
 
-	it('keeps a flagged registry-linked artist private and skips the lookup when the box stays ticked', async () => {
+	it('keeps a flagged registry-linked artist private and looks up the avatar when the box stays ticked', async () => {
 		const { db, platform } = makeDb();
 		stubRegistryFetch({ 'public.api.bsky.app': { avatar: resolvedAvatar } });
 		const row = await db
@@ -990,7 +992,7 @@ describe('update action — the keep-private flag', () => {
 		await save(platform, row.id, { ledgerPrivate: 'on' });
 		const after = await read(db, row.id);
 		expect(after!.ledgerPrivate).toBe(true);
-		expect(after!.avatarUrl).toBeNull();
+		expect(after!.avatarUrl).toBe(resolvedAvatar);
 	});
 
 	it('saves nothing, flag included, when the save fails partway', async () => {
@@ -1005,8 +1007,8 @@ describe('update action — the keep-private flag', () => {
 		expect((await read(db, id))!.ledgerPrivate).toBe(false);
 	});
 
-	// The old account's face must never persist under a new handle, and a
-	// private artist's new handle must not be looked up either: clear it instead.
+	// A private artist's avatar follows their handle like anyone else's: a new
+	// handle is looked up, and a found avatar replaces the old one.
 	describe('a flagged artist with a stored avatar', () => {
 		const storedAvatar = '/img/avatars/quill/alice.jpg';
 		async function seedFlagged(db: ReturnType<typeof makeDb>['db']) {
@@ -1018,17 +1020,40 @@ describe('update action — the keep-private flag', () => {
 			return row.id;
 		}
 
-		it('clears the avatar without a lookup when the handle changes', async () => {
+		it("looks up the new handle and replaces the old account's avatar when the handle changes", async () => {
 			const { db, platform } = makeDb();
-			const fetchSpy = vi.fn(() => Promise.reject(new Error('offline')));
-			vi.stubGlobal('fetch', fetchSpy);
+			const bobAvatar = 'https://cdn.bsky.app/img/avatar/plain/bob.jpg';
+			stubRegistryFetch({ 'bob.bsky.social': { avatar: bobAvatar } });
+			const { id } = await db
+				.insert(schema.artists)
+				.values({
+					name: 'Quill',
+					ledgerPrivate: true,
+					avatarUrl: 'https://cdn.bsky.app/img/avatar/plain/alice.jpg',
+					blueskyUrl: 'https://bsky.app/profile/alice.bsky.social'
+				})
+				.returning()
+				.get();
+
+			await actions.update(
+				updateEvent(platform, { id: String(id), name: 'Quill', bluesky: 'bob.bsky.social', ledgerPrivate: 'on' })
+			);
+			const after = await read(db, id);
+			expect(after!.blueskyUrl).toBe('https://bsky.app/profile/bob.bsky.social');
+			expect(after!.avatarUrl).toBe(bobAvatar);
+			expect(after!.ledgerPrivate).toBe(true);
+		});
+
+		it("keeps the avatar when the new handle's lookup fails", async () => {
+			const { db, platform } = makeDb();
 			const id = await seedFlagged(db);
+			const before = await read(db, id);
 
 			await actions.update(updateEvent(platform, { id: String(id), name: 'Quill', twitter: 'bob', ledgerPrivate: 'on' }));
 			const after = await read(db, id);
 			expect(after!.twitterUrl).toBe('https://twitter.com/bob');
-			expect(after!.avatarUrl).toBeNull();
-			expect(fetchSpy).not.toHaveBeenCalled();
+			expect(after!.avatarUrl).toBe(before!.avatarUrl);
+			expect(after!.avatarResolvedAt).toBeNull(); // the refresh cron tries again later
 		});
 
 		it('keeps the avatar without a lookup when the handle is unchanged', async () => {
@@ -1096,6 +1121,123 @@ describe('update action — avatar clobber guard (#187)', () => {
 		const after = await db.select().from(schema.artists).get();
 		expect(after!.avatarUrl).toBe('/img/avatars/nyx/owned.jpg'); // not downgraded to the hotlink
 		expect(after!.avatarResolvedAt).toBeNull(); // not stamped — the cron may still retry it
+	});
+
+	// A failed lookup never clears an avatar, even after a handle change; the
+	// dropped stamp lets the refresh cron try the new handle soon.
+	it("keeps the avatar when a changed handle's lookup fails", async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({
+				name: 'Nyx',
+				avatarUrl: '/img/avatars/nyx/owned.jpg',
+				blueskyUrl: 'https://bsky.app/profile/nyx.bsky.social',
+				avatarResolvedAt: '2026-10-01T00:00:00.000Z'
+			})
+			.returning({ id: schema.artists.id })
+			.get();
+
+		await actions.update(updateEvent(platform, { id: String(row.id), name: 'Nyx', bluesky: 'other.bsky.social' }));
+		const after = await db.select().from(schema.artists).get();
+		expect(after!.blueskyUrl).toBe('https://bsky.app/profile/other.bsky.social');
+		expect(after!.avatarUrl).toBe('/img/avatars/nyx/owned.jpg');
+		expect(after!.avatarResolvedAt).toBeNull();
+	});
+
+	// Patreon avatars aren't looked up, so adding one isn't a new account.
+	it('keeps an owned avatar when only a Patreon link is added and the lookup fails', async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({
+				name: 'Nyx',
+				avatarUrl: '/img/avatars/nyx/owned.jpg',
+				blueskyUrl: 'https://bsky.app/profile/nyx.bsky.social',
+				avatarResolvedAt: '2026-10-01T00:00:00.000Z'
+			})
+			.returning({ id: schema.artists.id })
+			.get();
+
+		await actions.update(updateEvent(platform, { id: String(row.id), name: 'Nyx', bluesky: 'nyx.bsky.social', patreon: 'nyx' }));
+		const after = await db.select().from(schema.artists).get();
+		expect(after!.patreonUrl).not.toBeNull();
+		expect(after!.avatarUrl).toBe('/img/avatars/nyx/owned.jpg');
+		expect(after!.avatarResolvedAt).toBe('2026-10-01T00:00:00.000Z');
+	});
+
+	// The avatar comes from Bluesky when it's set, so a new X handle beside the
+	// same Bluesky handle is the same account; without Bluesky, X is the account.
+	it('keeps the avatar when only the X handle changes beside the same Bluesky handle', async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({
+				name: 'Nyx',
+				avatarUrl: '/img/avatars/nyx/owned.jpg',
+				blueskyUrl: 'https://bsky.app/profile/nyx.bsky.social',
+				twitterUrl: 'https://twitter.com/nyx_old',
+				avatarResolvedAt: '2026-10-01T00:00:00.000Z'
+			})
+			.returning({ id: schema.artists.id })
+			.get();
+
+		await actions.update(
+			updateEvent(platform, { id: String(row.id), name: 'Nyx', bluesky: 'nyx.bsky.social', twitter: 'nyx_new' })
+		);
+		const after = await db.select().from(schema.artists).get();
+		expect(after!.twitterUrl).toBe('https://twitter.com/nyx_new');
+		expect(after!.avatarUrl).toBe('/img/avatars/nyx/owned.jpg');
+		expect(after!.avatarResolvedAt).toBe('2026-10-01T00:00:00.000Z');
+	});
+
+	it('keeps the avatar when the X handle changes, there is no Bluesky handle, and the lookup fails', async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({
+				name: 'Nyx',
+				avatarUrl: '/img/avatars/nyx/owned.jpg',
+				twitterUrl: 'https://twitter.com/nyx_old',
+				avatarResolvedAt: '2026-10-01T00:00:00.000Z'
+			})
+			.returning({ id: schema.artists.id })
+			.get();
+
+		await actions.update(updateEvent(platform, { id: String(row.id), name: 'Nyx', twitter: 'nyx_new' }));
+		const after = await db.select().from(schema.artists).get();
+		expect(after!.avatarUrl).toBe('/img/avatars/nyx/owned.jpg');
+		expect(after!.avatarResolvedAt).toBeNull();
+	});
+
+	it("swaps an owned avatar for the new handle's hotlink when the handle changes", async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({ name: 'Nyx', avatarUrl: '/img/avatars/nyx/owned.jpg', blueskyUrl: 'https://bsky.app/profile/nyx.bsky.social' })
+			.returning({ id: schema.artists.id })
+			.get();
+		// Profile lookup succeeds; the CDN download stays offline → hotlink fallback.
+		stubRegistryFetch({ 'other.bsky.social': { avatar: 'https://cdn.bsky.app/img/avatar/plain/other.jpg' } });
+
+		await actions.update(updateEvent(platform, { id: String(row.id), name: 'Nyx', bluesky: 'other.bsky.social' }));
+		const after = await db.select().from(schema.artists).get();
+		expect(after!.avatarUrl).toBe('https://cdn.bsky.app/img/avatar/plain/other.jpg');
+		expect(after!.avatarResolvedAt).toBeNull(); // not stamped, so the cron re-hosts it later
+	});
+
+	// An older row can hold a raw handle; the same handle posted back (and
+	// normalized) is the same account, so a failed lookup keeps the avatar.
+	it('treats a raw stored handle equal to the posted one as unchanged', async () => {
+		const { db, platform } = makeDb();
+		const row = await db
+			.insert(schema.artists)
+			.values({ name: 'Nyx', avatarUrl: 'https://cdn.test/avatars/nyx/good.jpg', twitterUrl: '@nyx_art' })
+			.returning({ id: schema.artists.id })
+			.get();
+
+		await actions.update(updateEvent(platform, { id: String(row.id), name: 'Nyx', twitter: 'nyx_art' }));
+		expect((await db.select().from(schema.artists).get())!.avatarUrl).toBe('https://cdn.test/avatars/nyx/good.jpg');
 	});
 
 	// Clearing every avatar-capable social is a deliberate removal — with nothing

@@ -129,7 +129,7 @@ function countLookups(page: Page) {
 test('a pasted link picks the artist it names, or says why it can\'t', async ({ page }, testInfo) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	const artist = page.getByLabel('Artist', { exact: true });
 	const card = page.locator('.lookup');
 	await expect(artist).toHaveValue('');
@@ -228,7 +228,7 @@ test('a pasted link picks the artist it names, or says why it can\'t', async ({ 
 	await expect(
 		dialog.getByText('Sona filled the name and Twitter link from the link you pasted. They\'re a guess until you check them.')
 	).toBeVisible();
-	await expect(dialog.getByLabel('Keep private (commission ledger only)')).toBeChecked();
+	await expect(dialog.getByLabel('Keep private')).toBeChecked();
 	await settledShot(page, testInfo.outputPath('commission-link-add-artist.png'));
 	await dialog.getByRole('button', { name: 'Cancel' }).click();
 	await expect(dialog).toHaveCount(0);
@@ -274,7 +274,7 @@ test('a pasted link picks the artist it names, or says why it can\'t', async ({ 
 test('a name that only looks like the handle, or a handle two artists share, waits for the owner', async ({ page }, testInfo) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	const artist = page.getByLabel('Artist', { exact: true });
 	const card = page.locator('.lookup');
 
@@ -310,7 +310,7 @@ test('a name that only looks like the handle, or a handle two artists share, wai
 test('a lookup sends once per link, drops a stale answer, and can be tried again', async ({ page }) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	const artist = page.getByLabel('Artist', { exact: true });
 	const card = page.locator('.lookup');
 	const lookups = countLookups(page);
@@ -448,7 +448,7 @@ test('a lookup sends once per link, drops a stale answer, and can be tried again
 test('the draft survives a trip to the Artists page, and the lookup asks again on return', async ({ page }, testInfo) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	const artist = page.getByLabel('Artist', { exact: true });
 	await page.getByLabel('Title').fill('E2E draft title');
 	// A FurAffinity handle, because adding an artist with an X or Bluesky
@@ -479,7 +479,7 @@ test('the draft survives a trip to the Artists page, and the lookup asks again o
 test("a restored draft keeps the lookup's own pick replaceable", async ({ page }) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	const artist = page.getByLabel('Artist', { exact: true });
 	const card = page.locator('.lookup');
 	await paste(link, 'https://x.com/e2e_artist/status/21');
@@ -532,7 +532,7 @@ test('Back during a navigation leaves the ledger pages working', async ({ page }
 	await expect(page).toHaveURL(/\/admin\/commissions\/new$/);
 	await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
 	await expect(page.getByRole('heading', { level: 1, name: 'New entry' })).toBeVisible();
-	await expect(page.getByLabel('Link to where you asked')).toBeVisible();
+	await expect(page.getByLabel("Where it's happening")).toBeVisible();
 });
 
 test('a saved form leaves no draft to come back to', async ({ page }) => {
@@ -540,7 +540,7 @@ test('a saved form leaves no draft to come back to', async ({ page }) => {
 	await open(page, '/admin/commissions/new');
 	await page.getByLabel('Artist', { exact: true }).selectOption({ label: 'Test Artist' });
 	await page.getByLabel('Title').fill('E2E saved once');
-	await paste(page.getByLabel('Link to where you asked'), 'https://x.com/nobody_here/status/30');
+	await paste(page.getByLabel("Where it's happening"), 'https://x.com/nobody_here/status/30');
 	await page.getByRole('button', { name: 'Save entry' }).click();
 	await expect(page).toHaveURL(/\/admin\/commissions$/);
 
@@ -1027,7 +1027,7 @@ test('Reload entry clears the last lookup, and the same link can be looked up ag
 	await expect(other).toHaveURL(/\/admin\/commissions$/);
 	await other.close();
 
-	const link = page.getByLabel('Link to where you asked');
+	const link = page.getByLabel("Where it's happening");
 	await paste(link, 'https://x.com/nobody_here/status/12');
 	await expect(page.locator('.lookup').getByText("nobody_here isn't in your artist list yet.")).toBeVisible();
 	await page.getByRole('button', { name: 'Save changes' }).click();
@@ -1050,7 +1050,7 @@ test('a draft typed against an older copy of the entry is dropped on return', as
 	const keptKind = await kind.inputValue();
 
 	await page.getByLabel('Notes').fill('E2E draft note');
-	await paste(page.getByLabel('Link to where you asked'), 'https://x.com/nobody_here/status/40');
+	await paste(page.getByLabel("Where it's happening"), 'https://x.com/nobody_here/status/40');
 	await page.locator('.sidebar-nav').getByRole('link', { name: 'Artists' }).click();
 	await expect(page).toHaveURL(/\/admin\/artists$/);
 
@@ -1066,7 +1066,7 @@ test('a draft typed against an older copy of the entry is dropped on return', as
 	await page.goBack();
 	await expect(kind).toHaveValue('Changed elsewhere');
 	await expect(page.getByLabel('Notes')).not.toHaveValue('E2E draft note');
-	await expect(page.getByLabel('Link to where you asked')).not.toHaveValue('https://x.com/nobody_here/status/40');
+	await expect(page.getByLabel("Where it's happening")).not.toHaveValue('https://x.com/nobody_here/status/40');
 	await expect(draftNote(page)).toHaveCount(0);
 	// Saving now keeps the other tab's change.
 	await page.getByRole('button', { name: 'Save changes' }).click();
@@ -1139,7 +1139,7 @@ test('Reload entry takes away the draft-is-back line', async ({ page, context })
 	const keptNotes = await notes.inputValue();
 
 	await notes.fill('E2E draft before reload');
-	await paste(page.getByLabel('Link to where you asked'), 'https://x.com/nobody_here/status/41');
+	await paste(page.getByLabel("Where it's happening"), 'https://x.com/nobody_here/status/41');
 	await page.locator('.sidebar-nav').getByRole('link', { name: 'Artists' }).click();
 	await expect(page).toHaveURL(/\/admin\/artists$/);
 	await page.goBack();
@@ -1252,6 +1252,192 @@ test('deleting the entry empties the ledger', async ({ page }, testInfo) => {
 	await settledShot(page, testInfo.outputPath('commission-ledger-emptied.png'));
 });
 
+/** A bare entry by Test Artist, saved from New entry. */
+async function createEntry(page: Page, title: string) {
+	await open(page, '/admin/commissions/new');
+	await page.getByLabel('Artist', { exact: true }).selectOption({ label: 'Test Artist' });
+	await page.getByLabel('Title').fill(title);
+	await page.getByRole('button', { name: 'Save entry' }).click();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+}
+
+test("a row's Delete asks first and deletes only that row's entry", async ({ page, browser }, testInfo) => {
+	await loginRetrying(page, PASSWORD);
+	await createEntry(page, 'E2E keep me');
+	await createEntry(page, 'E2E delete me');
+
+	// Without JavaScript, the row's Delete opens the entry page's own confirmation.
+	const context = await browser.newContext({
+		baseURL: testInfo.project.use.baseURL,
+		storageState: await page.context().storageState(),
+		javaScriptEnabled: false
+	});
+	try {
+		const noJs = await context.newPage();
+		await noJs.goto('/admin/commissions');
+		await noJs.getByRole('link', { name: 'Delete E2E delete me' }).click();
+		await expect(noJs.getByRole('region', { name: 'Delete this entry?' })).toContainText('“E2E delete me”');
+	} finally {
+		await context.close();
+	}
+
+	await open(page, '/admin/commissions');
+	const trash = page.getByRole('button', { name: 'Delete E2E delete me' });
+	await trash.click();
+	const dialog = page.getByRole('dialog', { name: 'Delete this entry?' });
+	await expect(dialog).toContainText('“E2E delete me”');
+	await expect(dialog).toContainText('Test Artist stays in your artist list');
+	await dialog.getByRole('button', { name: 'Cancel' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(trash).toBeFocused();
+	await expect(page.getByRole('row', { name: /E2E delete me/ })).toHaveCount(1);
+
+	// A server error keeps the row, says so, and gives focus back to its Delete.
+	const listDelete = (url: URL) => url.pathname === '/admin/commissions' && url.search === '?/delete';
+	await page.route(listDelete, (route) =>
+		route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ type: 'error', error: { message: 'boom' } }) })
+	);
+	await trash.click();
+	await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+	const errorToast = page.getByRole('status').filter({ hasText: 'Something went wrong' });
+	await expect(errorToast).toBeVisible();
+	await expect(page.getByRole('row', { name: /E2E delete me/ })).toHaveCount(1);
+	await expect(trash).toBeEnabled();
+	await expect(trash).toBeFocused();
+	await page.unroute(listDelete);
+	// An error toast stays up for 7 seconds. Let this one go, so the check at the
+	// end only sees what the later deletes say.
+	await expect(errorToast).toHaveCount(0, { timeout: 10_000 });
+
+	await trash.click();
+	await settledShot(page, testInfo.outputPath('commission-row-delete.png'));
+	await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+	await expect(page.getByRole('row', { name: /E2E delete me/ })).toHaveCount(0);
+	await expect(page.getByRole('row', { name: /E2E keep me/ })).toHaveCount(1);
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+	// Said out loud, and focus moves to the neighbouring row, not the lost button.
+	await expect(page.getByRole('status').filter({ hasText: 'Deleted “E2E delete me”.' })).toBeVisible();
+	const keepLink = page.getByRole('link', { name: 'Edit E2E keep me' });
+	await expect(keepLink).toBeFocused();
+
+	// Deleted in another tab while this list still shows it: Delete on the stale
+	// row counts as done, with no error, and leaves the ledger empty for the
+	// tests after this one. Focus falls back to the heading.
+	const keepId = (await keepLink.getAttribute('href'))!.split('/')[3];
+	const elsewhere = await page.request.post('/admin/commissions?/delete', {
+		form: { id: keepId },
+		headers: { origin: new URL(page.url()).origin },
+		maxRedirects: 0
+	});
+	expect(elsewhere.status()).toBeLessThan(400);
+	await page.getByRole('button', { name: 'Delete E2E keep me' }).click();
+	await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'No commissions yet' })).toBeVisible();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+	await expect(page.getByRole('status').filter({ hasText: /Couldn't delete|Something went wrong/ })).toHaveCount(0);
+	await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
+});
+
+// Art already in the gallery links to its entry instead of being uploaded
+// again (SONA-236). The pieces are the ones the Add to gallery tests above left
+// by Test Artist: E2E Snowfall (with a variant of the same title) and E2E
+// unrelated piece. Ends with the ledger empty, as it started.
+test('Link a piece links gallery art to an entry, with or without JavaScript, and Unlink keeps the piece', async ({ page, browser }, testInfo) => {
+	const ENTRY = 'E2E old commission';
+	await loginRetrying(page, PASSWORD);
+	await open(page, '/admin/commissions/new');
+	await page.getByLabel('Artist', { exact: true }).selectOption({ label: 'Test Artist' });
+	await page.getByLabel('Title').fill(ENTRY);
+	await page.getByLabel('Status').selectOption('delivered');
+	await page.getByRole('button', { name: 'Save entry' }).click();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+	const row = section(page, 'Finished').getByRole('row', { name: new RegExp(ENTRY) });
+
+	// Without JavaScript, the row's Link a piece opens the entry page's own
+	// picker, and Unlink is a plain form.
+	const context = await browser.newContext({
+		baseURL: testInfo.project.use.baseURL,
+		storageState: await page.context().storageState(),
+		javaScriptEnabled: false
+	});
+	try {
+		const noJs = await context.newPage();
+		await noJs.goto('/admin/commissions');
+		await noJs.getByRole('link', { name: `Link a piece: ${ENTRY}` }).click();
+		const picker = noJs.getByRole('region', { name: 'Link a piece' });
+		await expect(picker.getByRole('group', { name: 'Pieces by Test Artist, newest first' })).toBeVisible();
+		await picker.getByRole('radio', { name: 'E2E unrelated piece' }).check();
+		await settledShot(noJs, testInfo.outputPath('commission-link-piece-nojs.png'));
+		await picker.getByRole('button', { name: 'Link piece' }).click();
+		await expect(galleryPanel(noJs).getByRole('link', { name: 'E2E unrelated piece' })).toBeVisible();
+		await galleryPanel(noJs).getByRole('button', { name: 'Unlink' }).click();
+		await expect(galleryPanel(noJs)).toContainText('Not in your gallery');
+	} finally {
+		await context.close();
+	}
+
+	await open(page, '/admin/commissions');
+	const linkButton = row.getByRole('button', { name: `Link a piece: ${ENTRY}` });
+	await linkButton.click();
+	const dialog = page.getByRole('dialog', { name: 'Link a piece' });
+	const search = dialog.getByRole('searchbox', { name: 'Search titles' });
+	await expect(search).toBeFocused();
+	const pieces = dialog.getByRole('group', { name: 'Pieces by Test Artist, newest first' });
+	// Top-level pieces only: the variant shares its piece's title and isn't offered.
+	await expect(pieces.getByRole('radio', { name: 'E2E Snowfall' })).toHaveCount(1);
+	await expect(pieces.getByRole('radio', { name: 'E2E unrelated piece' })).toBeVisible();
+	await expect(dialog.getByRole('button', { name: 'Link piece' })).toBeDisabled();
+
+	// Esc closes it and puts focus back on the row's button.
+	await page.keyboard.press('Escape');
+	await expect(dialog).toBeHidden();
+	await expect(linkButton).toBeFocused();
+
+	// By keyboard: search, then Tab past Search into the pieces and pick one.
+	await linkButton.click();
+	await search.fill('snow');
+	await search.press('Enter');
+	await expect(pieces.getByRole('radio')).toHaveCount(1);
+	await page.keyboard.press('Tab');
+	await page.keyboard.press('Tab');
+	await expect(pieces.getByRole('radio', { name: 'E2E Snowfall' })).toBeFocused();
+	await page.keyboard.press('Space');
+	await expect(pieces.getByRole('radio', { name: 'E2E Snowfall' })).toBeChecked();
+	await settledShot(page, testInfo.outputPath('commission-link-piece-dialog.png'));
+	await dialog.getByRole('button', { name: 'Link piece' }).click();
+
+	const pieceLink = row.getByRole('link', { name: 'E2E Snowfall' });
+	await expect(pieceLink).toBeVisible();
+	await expect(pieceLink).toBeFocused();
+	await expect(row.getByRole('button', { name: `Link a piece: ${ENTRY}` })).toHaveCount(0);
+	await settledShot(page, testInfo.outputPath('commission-link-piece-linked.png'));
+	const pieceUrl = await pieceLink.getAttribute('href');
+
+	// Unlink from the entry form. It keeps unsaved typing, and a save after it
+	// goes through: the form moves on to the version the unlink wrote.
+	await open(page, (await row.getByRole('link', { name: `Edit ${ENTRY}` }).getAttribute('href'))!);
+	await expect(galleryPanel(page).getByRole('link', { name: 'E2E Snowfall' })).toBeVisible();
+	await page.getByLabel('Notes').fill('typed before unlinking');
+	await galleryPanel(page).getByRole('button', { name: 'Unlink' }).click();
+	await expect(galleryPanel(page)).toContainText('Not in your gallery');
+	await expect(galleryPanel(page).getByRole('button', { name: 'Link a piece' })).toBeFocused();
+	await expect(page.getByLabel('Notes')).toHaveValue('typed before unlinking');
+	await settledShot(page, testInfo.outputPath('commission-link-piece-unlinked.png'));
+	await page.getByRole('button', { name: 'Save changes' }).click();
+	await expect(page).toHaveURL(/\/admin\/commissions$/);
+	await expect(row).toContainText('Not in your gallery');
+
+	// Unlinking never deletes the piece.
+	await open(page, pieceUrl!);
+	await expect(page.locator('input[name="title"]')).toHaveValue('E2E Snowfall');
+
+	// Leave the ledger empty for the tests after this one.
+	await open(page, '/admin/commissions');
+	await page.getByRole('button', { name: `Delete ${ENTRY}` }).click();
+	await page.getByRole('dialog', { name: 'Delete this entry?' }).getByRole('button', { name: 'Delete', exact: true }).click();
+	await expect(page.getByRole('heading', { name: 'No commissions yet' })).toBeVisible();
+});
+
 test('signing out forgets unsaved drafts', async ({ page }) => {
 	await loginRetrying(page, PASSWORD);
 	await open(page, '/admin/commissions/new');
@@ -1320,12 +1506,20 @@ test('Other currency finds a currency, and Add New Artist makes a private artist
 	await expect(page.getByRole('radio', { name: /USD/ })).toBeChecked();
 	await expect(page.locator('#ce-currency-hint')).toHaveText('Pick the currency the artist charges in.');
 
+	// The row as it loaded, which picks from Other currency never take away.
+	const rowRadios = page.getByRole('radiogroup').getByRole('radio');
+	const loadedRow = await rowRadios.evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value));
+
 	// Other currency: search by code, Escape closes back to the button, Enter picks.
 	const other = page.getByRole('button', { name: 'Other currency' });
 	await other.click();
 	const find = page.getByRole('combobox', { name: 'Find a currency' });
 	const results = page.getByRole('listbox', { name: 'Find a currency' });
+	const status = page.locator('#ce-currency-search').getByRole('status');
 	await expect(find).toBeFocused();
+	// Before any typing the status says nothing, shown or read out.
+	await expect(status).toHaveText('');
+	await expect(status).toBeHidden();
 	await page.keyboard.press('Escape');
 	await expect(find).toBeHidden();
 	await expect(other).toBeFocused();
@@ -1357,9 +1551,17 @@ test('Other currency finds a currency, and Add New Artist makes a private artist
 	await other.click();
 	await find.fill('zzzz');
 	await expect(results).toBeHidden();
-	await expect(page.getByRole('status').filter({ hasText: 'No currency matches “zzzz”.' })).toBeVisible();
+	await expect(status).toHaveText('No currency matches “zzzz”.');
+	await expect(status).toBeVisible();
+	// A symbol finds its currency, as the list shows it beside the code. The
+	// count is for screen readers only: the list shows it already.
+	await find.fill('€');
+	await expect(results.getByRole('option').first()).toHaveId('ce-currency-opt-EUR');
+	await expect(status).toHaveText(/^\d+ currenc(y matches|ies match)\.$/);
+	await expect(status).toBeHidden();
 	await find.fill('krw');
 	await expect(results.getByRole('option')).toHaveCount(1);
+	await expect(status).toHaveText('1 currency matches.');
 	await page.keyboard.press('Enter');
 	const krw = page.getByRole('radio', { name: /KRW/ });
 	await expect(krw).toBeChecked();
@@ -1389,8 +1591,22 @@ test('Other currency finds a currency, and Add New Artist makes a private artist
 	expect(countChf(await chfPill.innerText())).toBe(1);
 	expect(countChf(await page.locator('.field-pill.amount').innerText())).toBe(1);
 	await settledShot(page, testInfo.outputPath('commission-entry-currency-picked.png'));
-	// Back to the won, which the entry below is priced in.
-	await krw.check();
+	// Three picks from Other currency in a row: only the latest joins the row,
+	// in front of the row as it loaded.
+	expect(await rowRadios.evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value))).toEqual([
+		'CHF',
+		...loadedRow
+	]);
+	// Back to the won, which the entry below is priced in. CHF replaced it in
+	// the row, so it comes from Other currency again.
+	await other.click();
+	await find.fill('krw');
+	await page.keyboard.press('Enter');
+	await expect(krw).toBeChecked();
+	expect(await rowRadios.evaluateAll((els) => els.map((el) => (el as HTMLInputElement).value))).toEqual([
+		'KRW',
+		...loadedRow
+	]);
 
 	// Add New Artist: focus lands in the dialog, so Escape closes it.
 	const addArtist = page.getByRole('button', { name: 'Add New Artist' });
@@ -1407,7 +1623,7 @@ test('Other currency finds a currency, and Add New Artist makes a private artist
 
 	await addArtist.click();
 	// An entry's artist starts private, so a sync can't share them before Save.
-	await expect(dialog.getByLabel('Keep private (commission ledger only)')).toBeChecked();
+	await expect(dialog.getByLabel('Keep private')).toBeChecked();
 	await dialog.getByLabel('Artist Name').fill('E2E Private Artist');
 	await settledShot(page, testInfo.outputPath('commission-entry-new-artist.png'));
 	await dialog.getByRole('button', { name: 'Create Artist' }).click();
@@ -1430,7 +1646,7 @@ test('Other currency finds a currency, and Add New Artist makes a private artist
 		.getByRole('button', { name: 'Edit artist' })
 		.click();
 	// The Edit Artist modal has no dialog role, so the label alone finds it.
-	await expect(page.getByLabel('Keep private (commission ledger only)')).toBeChecked();
+	await expect(page.getByLabel('Keep private')).toBeChecked();
 
 	// Back on a new entry, the row leads with the newest saved currency.
 	await open(page, '/admin/commissions/new');
@@ -1514,7 +1730,7 @@ test('an artist added in another tab can be picked by a link', async ({ page, co
 	// A second tab adds the artist after this form loaded.
 	const other = await context.newPage();
 	await open(other, '/admin/commissions/new');
-	const otherLink = other.getByLabel('Link to where you asked');
+	const otherLink = other.getByLabel("Where it's happening");
 	await paste(otherLink, 'https://x.com/other_tab_artist/status/1');
 	await other.locator('.lookup').getByRole('button', { name: 'Add other_tab_artist as a new artist' }).click();
 	const dialog = other.getByRole('dialog');
@@ -1525,7 +1741,7 @@ test('an artist added in another tab can be picked by a link', async ({ page, co
 
 	// The lookup here finds them, and the select shows them as the pick, so
 	// the required Artist field is filled.
-	await paste(page.getByLabel('Link to where you asked'), 'https://x.com/other_tab_artist/status/2');
+	await paste(page.getByLabel("Where it's happening"), 'https://x.com/other_tab_artist/status/2');
 	await expect(page.locator('.lookup')).toContainText('other_tab_artist');
 	await expect(artist.locator('option:checked')).toHaveText('other_tab_artist');
 	expect(await artist.evaluate((el: HTMLSelectElement) => el.checkValidity())).toBe(true);

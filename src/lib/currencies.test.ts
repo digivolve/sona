@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { currencyRow, currencySymbol, initialCurrency, localeCurrency } from './currencies';
+import { currencyOptions, currencyRow, currencySymbol, findCurrencies, initialCurrency, knownCurrencies, localeCurrency } from './currencies';
 
 describe('localeCurrency', () => {
 	it('reads the region of an Accept-Language header', () => {
@@ -91,5 +91,76 @@ describe('currencySymbol', () => {
 	});
 	it('gives nothing for a code that is not a currency', () => {
 		expect(currencySymbol('not', 'en')).toBeNull();
+	});
+});
+
+describe('findCurrencies', () => {
+	const all = knownCurrencies();
+	const namer = (locale: string) => {
+		const names = new Intl.DisplayNames([locale], { type: 'currency' });
+		return (code: string) => names.of(code) ?? code;
+	};
+	const find = (query: string, locale = 'en') => findCurrencies(all, query, locale, namer(locale));
+
+	it('finds EUR first for €', () => {
+		expect(find('€')[0]).toBe('EUR');
+		expect(find(' € ')[0]).toBe('EUR');
+	});
+
+	it('lists USD first for $, then the other dollars', () => {
+		const found = find('$');
+		expect(found[0]).toBe('USD');
+		expect(found).toEqual(expect.arrayContaining(['AUD', 'CAD', 'NZD']));
+		expect(found.indexOf('USD')).toBeLessThan(found.indexOf('AUD'));
+	});
+
+	it('finds JPY then CNY for ¥, and the full-width ￥ the same way', () => {
+		expect(find('¥').slice(0, 2)).toEqual(['JPY', 'CNY']);
+		expect(find('￥').slice(0, 2)).toEqual(['JPY', 'CNY']);
+		expect(find('¥', 'ja')).toContain('JPY');
+	});
+
+	it('finds a symbol of its own as typed, such as A$', () => {
+		expect(find('A$')[0]).toBe('AUD');
+		expect(find('ca$')[0]).toBe('CAD');
+	});
+
+	it('finds currencies by code and by name when the query is no symbol', () => {
+		expect(find('dollar')).toEqual(expect.arrayContaining(['USD', 'AUD', 'CAD']));
+		expect(find('dollar')).not.toContain('EUR');
+		expect(find('JP')).toContain('JPY');
+		expect(find('yen')).toContain('JPY');
+		expect(find('krona')).toContain('SEK');
+		expect(find('eu')).toContain('EUR');
+		expect(find('zzzz')).toEqual([]);
+		expect(find('円', 'ja')).toContain('JPY');
+		expect(find('ドル', 'ja')).toContain('USD');
+	});
+
+	it('finds every currency, in order, for an empty query', () => {
+		expect(find('')).toEqual(all);
+		expect(find('   ')).toEqual(all);
+	});
+});
+
+describe('currencyOptions', () => {
+	const row = ['USD', 'EUR', 'GBP', 'JPY'];
+
+	it('shows the row alone when the value and the last pick are in it', () => {
+		expect(currencyOptions(row, 'EUR', null)).toEqual(row);
+		expect(currencyOptions(row, 'EUR', 'GBP')).toEqual(row);
+	});
+
+	it('puts an Other pick in front, and keeps it while a row currency is chosen', () => {
+		expect(currencyOptions(row, 'KRW', 'KRW')).toEqual(['KRW', ...row]);
+		expect(currencyOptions(row, 'USD', 'KRW')).toEqual(['KRW', ...row]);
+	});
+
+	it('shows one extra at most: a value from Reload entry wins over an older pick', () => {
+		expect(currencyOptions(row, 'CHF', 'KRW')).toEqual(['CHF', ...row]);
+	});
+
+	it('shows a refused save’s outside currency with no pick at all', () => {
+		expect(currencyOptions(row, 'SEK', null)).toEqual(['SEK', ...row]);
 	});
 });
